@@ -4,6 +4,11 @@
   "description": "Rain running down a fogged window, as a drop-in <rain-on-glass> web component.",
   "author": "Hiro · Akatori Design",
   "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Akatori-Design/Phenomenon.git",
+    "directory": "packages/rain-on-glass"
+  },
   "type": "module",
   "main": "./dist/rain-on-glass.js",
   "types": "./dist/rain-on-glass.d.ts",

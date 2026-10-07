@@ -1,0 +1,62 @@
+# Publishes one package from packages/ to GitHub Packages.
+#
+# Release by pushing a tag named <package-folder>@<version>, matching that package.json:
+#   git tag rain-on-glass@0.1.1 && git push origin rain-on-glass@0.1.1
+# or run it by hand from the Actions tab and type the package folder.
+#
+# Uses the workflow's own GITHUB_TOKEN, so nobody needs a personal token with write:packages.
+# Each package.json's "repository" points at this repo, so the package is linked to it and stays private.
+name: Publish package
+
+on:
+  push:
+    tags: ['*@*']
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Folder under packages/, e.g. rain-on-glass'
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the package
+        id: pkg
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.ref_name }}
+          INPUT: ${{ inputs.package }}
+        run: |
+          if [ "$EVENT" = "push" ]; then name="${TAG%@*}"; version="${TAG#*@}"; else name="$INPUT"; version=""; fi
+          if ! printf '%s' "$name" | grep -Eq '^[a-z0-9][a-z0-9-]*$'; then echo "::error::'$name' is not a package folder name"; exit 1; fi
+          dir="packages/$name"
+          if [ ! -f "$dir/package.json" ]; then echo "::error::No package at $dir"; exit 1; fi
+          actual=$(node -p "require('./$dir/package.json').version")
+          if [ -n "$version" ] && [ "$version" != "$actual" ]; then
+            echo "::error::Tag says $version but $dir/package.json says $actual. Bump the version in package.json first."; exit 1
+          fi
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "Publishing $dir at $actual"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          scope: '@akatori-design'
+
+      - name: Install
+        run: npm ci
+        working-directory: ${{ steps.pkg.outputs.dir }}
+
+      - name: Build and publish
+        run: npm publish
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

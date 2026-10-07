@@ -72,18 +72,38 @@ Every package is signed **Hiro · Akatori Design** in four places: a copyright n
 of the built file, a credits comment inside the element, a `credits` property, and a credit line
 in the control tray.
 
-### Adding a package for another project
+### Releasing a package
 
-1. In the project's `index.html`, route every `window` and `document` access through a
-   `// ---------- host ----------` block at the top of the script, as `rain-on-glass` does.
-2. Copy `packages/rain-on-glass/` to `packages/<project-folder>/` and adapt `build.mjs`, the
-   element's attributes, `package.json`, `LICENSE`, `README.md` and `demo.html`.
-3. Build, check the demo, and run `npm pack --dry-run` before publishing with `npm publish`.
-   Publishing needs a GitHub token with the `write:packages` scope.
+Bump `version` in the package's `package.json`, commit, then push a tag named after the folder:
+
+```bash
+git tag rain-on-glass@0.1.1
+git push origin main rain-on-glass@0.1.1
+```
+
+The **Publish package** workflow builds and publishes it to GitHub Packages, linked to this
+repo, so it stays private. No personal publishing token is needed.
+
+### Installing a package
+
+You need a GitHub personal access token (classic) with `read:packages`, saved as `GITHUB_TOKEN`,
+and an `.npmrc` in the project that uses it:
+
+```
+@akatori-design:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+```
+
+Then `npm install @akatori-design/<project-folder>`. Each package's README has usage details.
+
+### Adding a new piece or package
+
+See [CLAUDE.md](CLAUDE.md) for the house rules: page structure, the host block, packaging,
+the signature, verification and releases.
 
 ## Copyright
 
 © 2026 Hiro · Akatori Design. All rights reserved.
 
-The source is shared here to be viewed. No licence is granted to copy, modify or redistribute
-it. Each package carries its own licence; see the package's `LICENSE`.
+The source is private to this repo. No licence is granted to copy, modify or redistribute it.
+Each package carries its own licence; see the package's `LICENSE`.
