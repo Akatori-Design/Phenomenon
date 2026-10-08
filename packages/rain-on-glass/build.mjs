@@ -41,6 +41,8 @@ css = css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, ' ').replace(/\s*([{}
 
 // ---------- markup ----------
 let markup = pick(/<body>([\s\S]*?)<script>/, 'the markup').trim();
+// the page's default video ships beside the page, not in the package: the element starts on the painted views
+markup = swap(markup, /<option value="video"[^>]*>[^<]*<\/option>/, '', 'the video view option');
 markup = swap(markup, /(<p class="note">[\s\S]*?<\/p>)/, `$1\n    <p class="credit">Rain on Glass by ${pkg.author} · © ${YEAR}</p>`, 'the note');
 
 // ---------- script ----------
@@ -73,15 +75,18 @@ const minifyGLSL = (src) => {
   }
   return out.trim();
 };
-script = swap(script, /`(#version 300 es[\s\S]*?)`/g, (_, s) => '`' + minifyGLSL(s) + '`', 'shaders', 6);
+script = swap(script, /`(#version 300 es[\s\S]*?)`/g, (_, s) => '`' + minifyGLSL(s) + '`', 'shaders', 7);
 
-const ATTRS = { rainfall: 'rain', 'drop-size': 'size', condensation: 'mist', refraction: 'refract', fog: 'fog', humidity: 'humid' };
+const ATTRS = { rainfall: 'rain', condensation: 'mist', refraction: 'refract', fog: 'fog', humidity: 'humid' };
+// where each slider starts on the page, so removing an attribute puts it back there
+const START = Function(`return (${pick(/const START = (\{[^}]*\});/, 'the slider START values')})`)();
 
 const element = `
 const CREDITS = ${JSON.stringify(CREDITS)};
 const CSS = ${JSON.stringify(css)};
 const MARKUP = ${JSON.stringify(`<!-- ${CREDITS} -->\n` + markup)};
 const SLIDERS = ${JSON.stringify(ATTRS)};
+const START = ${JSON.stringify(START)};
 
 function engine(__env) {
 ${script}
@@ -139,7 +144,7 @@ class RainOnGlass extends HTMLElement {
   #apply(name) {
     const v = this.getAttribute(name);
     if (name in SLIDERS) {
-      const input = this.#el(SLIDERS[name]), n = level(v ?? '0.5');
+      const input = this.#el(SLIDERS[name]), n = level(v ?? String(START[SLIDERS[name]]));
       if (input && n !== null) { input.value = n; input.dispatchEvent(new Event('input')); }
     } else if (name === 'scene') {
       const select = this.#el('scene');

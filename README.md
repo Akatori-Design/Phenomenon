@@ -15,9 +15,9 @@ Rain running down a fogged window. Drops land, merge, drip and refract the stree
 glass; above 80% rainfall, streams run down the pane. Sound follows the rain, with the odd
 roll of thunder in a storm.
 
-- **Drag** across the glass to wipe it, as if with three fingers.
+- **Drag** across the glass to wipe it, as if with three fingers (with a thumb on a phone).
 - **Drop a photo or video** anywhere to look through the glass at it.
-- **The Window tray** sets rainfall, drop size, condensation, refraction, fog and humidity.
+- **The Window tray** sets rainfall, condensation, refraction, fog and humidity.
 
 [Source page](rain-on-glass/index.html) · [Installable package](packages/rain-on-glass/)
 
