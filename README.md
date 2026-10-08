@@ -32,7 +32,7 @@ air, glowing where the beam catches them and falling dark in shadow.
 - **Press and drag** to swing a hand through the beam and sweep the dust away. It drifts back
   in over about a minute.
 
-[Source page](attic-light/index.html) · [How it works](attic-light/README.md)
+[Source page](attic-light/index.html) · [How it works](attic-light/README.md) · [Installable package](packages/attic-light/)
 
 ---
 
@@ -55,6 +55,7 @@ minified build, the licence and a README are published.
 | Package | Element | Source page |
 | --- | --- | --- |
 | [`@akatori-design/rain-on-glass`](packages/rain-on-glass/) | `<rain-on-glass>` | [rain-on-glass/index.html](rain-on-glass/index.html) |
+| [`@akatori-design/attic-light`](packages/attic-light/) | `<attic-light>` | [attic-light/index.html](attic-light/index.html) |
 
 Each package is generated from its project's `index.html`, so keep editing the page, then rebuild:
 

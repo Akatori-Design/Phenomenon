@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>attic-light demo</title>
+<style>
+  body { margin: 0; padding: 32px 16px; background: #0b0907; color: #ecdcc6; font: 14px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  main { max-width: 960px; margin: 0 auto; display: grid; gap: 24px; }
+  h1 { font-size: 16px; font-weight: 500; margin: 0; }
+  p { margin: 0; color: #9a8670; }
+  attic-light { border-radius: 12px; }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .row attic-light { aspect-ratio: 4 / 3; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+  button { font: inherit; color: inherit; background: #1a1510; border: 1px solid #3a3027; border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <h1>&lt;attic-light&gt;</h1>
+  <p>With controls. Move the pointer to stir the air; press and drag to sweep dust away.</p>
+  <attic-light id="main" controls></attic-light>
+  <div class="buttons">
+    <button type="button" id="dim">sunlight = 25%</button>
+    <button type="button" id="bright">sunlight = 80%</button>
+    <button type="button" id="thin">dust = 30%</button>
+    <button type="button" id="pause">toggle paused</button>
+    <button type="button" id="remount">remount</button>
+  </div>
+  <p>Without controls, set by attributes:</p>
+  <div class="row">
+    <attic-light dust="35%" haze="20%"></attic-light>
+    <attic-light sunlight="85%" haze="80%"></attic-light>
+  </div>
+  <p id="credits"></p>
+</main>
+<script type="module">
+  import { credits } from './dist/attic-light.js';
+  document.getElementById('credits').textContent = credits;
+  const main = document.getElementById('main');
+  const on = (id, fn) => document.getElementById(id).addEventListener('click', fn);
+  on('dim', () => main.setAttribute('sunlight', '25%'));
+  on('bright', () => main.setAttribute('sunlight', '80%'));
+  on('thin', () => main.setAttribute('dust', '30%'));
+  on('pause', () => main.toggleAttribute('paused'));
+  on('remount', () => { const parent = main.parentNode, next = main.nextSibling; main.remove(); parent.insertBefore(main, next); });
+</script>
+</body>
+</html>

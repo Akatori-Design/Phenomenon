@@ -24,16 +24,28 @@ body { background: var(--bg); overflow: hidden; font-family: ui-monospace, "SF M
 <script>
 (() => {
 "use strict";
-const canvas = document.getElementById('c');
+// ---------- host ----------
+// Everything the effect needs from the page it runs in. The installable package swaps this block
+// for one scoped to a single <attic-light> element (packages/attic-light/build.mjs).
+const $ = (id) => document.getElementById(id);
+const viewW = () => innerWidth, viewH = () => innerHeight;
+const localX = (e) => e.clientX, localY = (e) => e.clientY;
+const onPage = (type, fn, opts) => addEventListener(type, fn, opts);
+const nextFrame = (fn) => requestAnimationFrame(fn);
+const smallScreen = () => Math.min(innerWidth, innerHeight) < 600;
+const onTeardown = () => {};   // the page never tears down
+const expose = () => {};       // the page has no outside controls
+// ---------- end host ----------
+const canvas = $('c');
 const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, premultipliedAlpha: false });
 if (!gl || !gl.getExtension('EXT_color_buffer_float')) {
   const f = document.createElement('div'); f.className = 'fallback';
   f.textContent = 'This simulation needs WebGL2 with float render targets, which this browser does not provide.';
-  document.body.appendChild(f); return;
+  canvas.parentNode.appendChild(f); return;
 }
 const floatOK = !!gl.getExtension('EXT_color_buffer_float');
 const ENC = floatOK ? 1.0 : 0.25;
-const isSmall = Math.min(innerWidth, innerHeight) < 600 || navigator.hardwareConcurrency <= 4;
+const isSmall = smallScreen() || navigator.hardwareConcurrency <= 4;
 
 /* ---------- scene geometry (metres, y up) ---------- */
 const v3 = {
@@ -49,7 +61,9 @@ const BU = v3.norm(v3.cross(D, [0, 1, 0]));
 const BV = v3.cross(BU, D);
 const tFloor = O[1] / -D[1];
 const PATCH = [O[0] + D[0]*tFloor, 0, O[2] + D[2]*tFloor];
-const SUN_I = 3.2, SUN_C = [1.0, 0.80, 0.56];
+const SUN_C = [1.0, 0.80, 0.56];
+// Settings an embed can change; the defaults are the tuned look (sun 3.2, haze 1, every speck).
+const look = { sun: 3.2, haze: 1, dust: 1 };
 
 const CAM = [-1.99, 2.59, -0.04];
 const TARGET = [-1.45, 2.75, -1.75];
@@ -88,7 +102,7 @@ const FS_SCENE = `#version 300 es
 precision highp float;
 in vec2 vUv; out vec4 o;
 uniform vec3 uCam, uF, uR, uUp, uSun, uPatch;
-uniform float uTan, uAsp, uTime, uFrame, uEnc;
+uniform float uTan, uAsp, uTime, uFrame, uEnc, uHaze;
 ${BEAM}
 ${NOISE}
 float ign(vec2 p){ return fract(52.9829189*fract(dot(p, vec2(0.06711056, 0.00583715)))); }
@@ -144,7 +158,7 @@ void main(){
     if (b > 0.002) acc += b * (0.45 + 0.9*fbm(s*0.85 + drift)) * dt;
   }
   float ph = hg(dot(uD, -rd), 0.55);
-  col += uSun * acc * ph * 0.055;
+  col += uSun * acc * ph * 0.055 * uHaze;
   col += uSun * 0.001 * fbm(p*0.4) ;   // faint ambient haze
 
   // veiling glare around the bright opening
@@ -310,10 +324,10 @@ const pTone = program(VS_FULL, FS_TONE);
 const emptyVAO = gl.createVertexArray();
 
 /* ---------- framebuffer ---------- */
-let W = 0, Hh = 0, dpr = 1, fbo = null, fboTex = null;
+let W = 0, Hh = 0, dpr = 1, fbo = null, fboTex = null, sizedW = 0, sizedH = 0;
 function resize() {
   dpr = Math.min(devicePixelRatio || 1, 1.5);
-  const cssW = innerWidth, cssH = innerHeight;
+  const cssW = sizedW = viewW(), cssH = sizedH = viewH();
   if (cssW * cssH * dpr * dpr > 2.6e6) dpr = Math.sqrt(2.6e6 / (cssW * cssH));
   W = Math.max(1, Math.round(cssW * dpr)); Hh = Math.max(1, Math.round(cssH * dpr));
   canvas.width = W; canvas.height = Hh;
@@ -325,7 +339,7 @@ function resize() {
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTex, 0);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
-addEventListener('resize', resize); resize();
+onPage('resize', resize); resize();
 
 /* ---------- camera ---------- */
 const cam = {};
@@ -345,8 +359,7 @@ function updateCamera(time) {
   Object.assign(cam, { e, F, R, U, asp, tan, VP: M });
 }
 function pointerRay(cx, cy) {
-  const r = canvas.getBoundingClientRect();
-  const nx = ((cx - r.left) / r.width) * 2 - 1, ny = 1 - ((cy - r.top) / r.height) * 2;
+  const nx = (cx / Math.max(1, viewW())) * 2 - 1, ny = 1 - (cy / Math.max(1, viewH())) * 2;
   return v3.norm([
     cam.F[0] + nx*cam.tan*cam.asp*cam.R[0] + ny*cam.tan*cam.U[0],
     cam.F[1] + nx*cam.tan*cam.asp*cam.R[1] + ny*cam.tan*cam.U[1],
@@ -474,7 +487,7 @@ function sampleAir(px, py, pz, out) {
 
 /* ---------- pointer → air ---------- */
 const ptr = { in: false, down: false, cx: 0, cy: 0, P: null, vel: [0,0,0], puff: false, dir: [0,0,-1] };
-function onMove(e) { ptr.in = true; ptr.cx = e.clientX; ptr.cy = e.clientY; }
+function onMove(e) { ptr.in = true; ptr.cx = localX(e); ptr.cy = localY(e); }
 canvas.addEventListener('pointermove', onMove);
 canvas.addEventListener('pointerdown', e => {
   onMove(e); ptr.down = true; ptr.puff = true; ptr.P = null;
@@ -561,6 +574,7 @@ const state = [0, 1].map(() => {
 gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 const attrTex = makeTex(null);
 let cur = 0;
+const activeRows = () => Math.max(1, Math.round(TH * look.dust));
 
 function resetDust() {
   const P = new Float32Array(NP*4), Vz = new Float32Array(NP*4), T = new Float32Array(NP*4), A = new Float32Array(NP*4);
@@ -580,8 +594,7 @@ function resetDust() {
     P[k*4] = x; P[k*4+1] = y; P[k*4+2] = z;
     T[k*4] = gr()*0.01; T[k*4+1] = gr()*0.01; T[k*4+2] = gr()*0.01;
   }
-  const s = state[cur];
-  for (const [tex, data] of [[s.pos, P], [s.vel, Vz], [s.turb, T], [attrTex, A]]) {
+  for (const [tex, data] of [[state[0].pos, P], [state[0].vel, Vz], [state[0].turb, T], [state[1].pos, P], [state[1].vel, Vz], [state[1].turb, T], [attrTex, A]]) {
     gl.bindTexture(gl.TEXTURE_2D, tex); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TW, TH, gl.RGBA, gl.FLOAT, data);
   }
   Ua.fill(0); Va.fill(0); Wa.fill(0);
@@ -603,7 +616,7 @@ function stepDust(dt, frame) {
   const src = state[cur], dst = state[1 - cur];
   gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb);
   gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2]);
-  gl.viewport(0, 0, TW, TH); gl.disable(gl.BLEND);
+  gl.viewport(0, 0, TW, activeRows()); gl.disable(gl.BLEND);
   gl.useProgram(pUpdate.p); const u = pUpdate.u;
   [[src.pos, 'uPos'], [src.vel, 'uVel'], [src.turb, 'uTurb'], [attrTex, 'uAttr']].forEach(([t, n], i) => {
     gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(u[n], i);
@@ -629,9 +642,9 @@ function render(time, frame) {
   gl.disable(gl.BLEND);
   gl.useProgram(pScene.p); const s = pScene.u;
   gl.uniform3fv(s.uCam, cam.e); gl.uniform3fv(s.uF, cam.F); gl.uniform3fv(s.uR, cam.R); gl.uniform3fv(s.uUp, cam.U);
-  gl.uniform3f(s.uSun, SUN_C[0]*SUN_I, SUN_C[1]*SUN_I, SUN_C[2]*SUN_I); gl.uniform3fv(s.uPatch, PATCH);
+  gl.uniform3f(s.uSun, SUN_C[0]*look.sun, SUN_C[1]*look.sun, SUN_C[2]*look.sun); gl.uniform3fv(s.uPatch, PATCH);
   gl.uniform1f(s.uTan, cam.tan); gl.uniform1f(s.uAsp, cam.asp); gl.uniform1f(s.uTime, time);
-  gl.uniform1f(s.uFrame, frame); gl.uniform1f(s.uEnc, ENC); setBeam(s);
+  gl.uniform1f(s.uFrame, frame); gl.uniform1f(s.uEnc, ENC); gl.uniform1f(s.uHaze, look.haze); setBeam(s);
   gl.bindVertexArray(emptyVAO); gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
@@ -641,10 +654,10 @@ function render(time, frame) {
   gl.uniform1i(d.uTW, TW);
   gl.uniformMatrix4fv(d.uVP, false, cam.VP); gl.uniform3fv(d.uCam, cam.e);
   gl.uniform1f(d.uPx, Hh/(2*cam.tan)); gl.uniform1f(d.uFocus, FOCUS); gl.uniform1f(d.uAp, 0.0115);
-  gl.uniform1f(d.uTime, time); gl.uniform1f(d.uDpr, dpr); gl.uniform1f(d.uSunI, SUN_I); gl.uniform1f(d.uEnc, ENC);
+  gl.uniform1f(d.uTime, time); gl.uniform1f(d.uDpr, dpr); gl.uniform1f(d.uSunI, look.sun); gl.uniform1f(d.uEnc, ENC);
   gl.uniform1f(d.uMaxSize, Math.min(maxPt - 2, 120*dpr)); gl.uniform3fv(d.uCol, SUN_C); setBeam(d);
   gl.bindVertexArray(emptyVAO);
-  gl.drawArrays(gl.POINTS, 0, NP);
+  gl.drawArrays(gl.POINTS, 0, TW*activeRows());
 
   gl.disable(gl.BLEND);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, W, Hh);
@@ -654,19 +667,29 @@ function render(time, frame) {
   gl.bindVertexArray(emptyVAO); gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
-/* ---------- HUD + loop ---------- */
+/* ---------- loop ---------- */
 let paused = false;
 let last = performance.now(), simTime = 0, frame = 0;
 function loop(now) {
   const dt = Math.min(1/30, Math.max(1/240, (now - last)/1000)); last = now;
   if (!paused) simTime += dt;
+  if (viewW() !== sizedW || viewH() !== sizedH) resize();
   updateCamera(simTime);
   updatePointer(dt);
   if (!paused) { stepAir(dt, simTime); stepDust(dt, frame); }
   render(simTime, frame++);
-  requestAnimationFrame(loop);
+  nextFrame(loop);
 }
-requestAnimationFrame(loop);
+nextFrame(loop);
+// An embed sets these from its attributes: level is 0-1 with 0.5 as the tuned look; dust is the share of specks.
+const fromLevel = (base, v) => base * (v <= 0.5 ? v * 2 : 1 + (v - 0.5) * 2);
+expose({
+  sunlight: (v) => { look.sun = fromLevel(3.2, v); },
+  haze: (v) => { look.haze = fromLevel(1, v); },
+  dust: (v) => { look.dust = Math.min(1, Math.max(0, v)); },
+  paused: (on) => { paused = !!on; },
+  reset: resetDust,
+});
 })();
 </script>
 </body>

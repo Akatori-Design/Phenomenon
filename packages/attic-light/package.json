@@ -1,0 +1,38 @@
+{
+  "name": "@akatori-design/attic-light",
+  "version": "0.1.0",
+  "description": "Sunlight through an attic roof with drifting dust you can stir, as a drop-in <attic-light> web component.",
+  "author": "Hiro · Akatori Design",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "main": "./dist/attic-light.js",
+  "types": "./dist/attic-light.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/attic-light.d.ts",
+      "default": "./dist/attic-light.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "sideEffects": true,
+  "keywords": [
+    "web-component",
+    "webgl",
+    "sunlight",
+    "dust",
+    "animation"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}

@@ -1,0 +1,1331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Komorebi Wall</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap">
+<style>
+[hidden] { display: none !important; }
+:root {
+  /* Full-bleed WebGL wall in afternoon sun; one frosted control tray rests in the corner like a card pinned to the plaster */
+  --plaster: #eeebe5;
+  --ink: #22261f;
+  --dim: #686e63;
+  --tray: rgba(250, 249, 245, 0.62);
+  --line: rgba(34, 38, 31, 0.13);
+  --fill: rgba(34, 38, 31, 0.05);
+  --fill-hover: rgba(34, 38, 31, 0.1);
+  --accent: #56694a;
+  --gust: #a8742a;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+html, body { height: 100%; }
+body { margin: 0; background: var(--plaster); color: var(--ink); overflow: hidden; font-family: var(--mono); }
+#wall { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: manipulation; cursor: default; -webkit-tap-highlight-color: transparent; }
+
+.tray {
+  position: fixed; left: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  width: min(290px, calc(100vw - 32px));
+  background: var(--tray); border: 1px solid var(--line); border-radius: 10px;
+  -webkit-backdrop-filter: blur(16px) saturate(1.1); backdrop-filter: blur(16px) saturate(1.1);
+  font-size: 12px; line-height: 1.4;
+}
+.tray summary {
+  list-style: none; cursor: pointer; padding: 10px 12px;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+}
+.tray summary::-webkit-details-marker { display: none; }
+.tray summary::before { content: "+"; color: var(--dim); width: 10px; }
+.tray[open] summary::before { content: "−"; }
+.stat { margin-left: auto; color: var(--dim); letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tray.gusting .stat { color: var(--gust); }
+.rows { padding: 2px 12px 12px; display: grid; gap: 10px; }
+.row { display: grid; gap: 3px; }
+.row label, .row .cap { display: flex; justify-content: space-between; color: var(--dim); }
+.row output { color: var(--ink); font-variant-numeric: tabular-nums; }
+#spark { display: block; width: 100%; height: 38px; }
+select { font: inherit; color: var(--ink); background: var(--fill); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
+.btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.btns button {
+  font: inherit; color: var(--ink); background: var(--fill);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer;
+}
+.btns button:hover { background: var(--fill-hover); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.note { margin: 0; color: var(--dim); }
+#nogl { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; color: var(--dim); }
+</style>
+</head>
+<body>
+<canvas id="wall" aria-label="Sunlight through the leaves of a tree, moving on a white wall. Tap the wall to send a gust."></canvas>
+<div id="nogl" hidden>This effect needs WebGL 2. Try a current version of Chrome, Safari, Firefox or Edge.</div>
+
+<details class="tray" id="tray" open>
+  <summary>Wind <span class="stat" id="stat">Force 2 · 2.9 m/s</span></summary>
+  <div class="rows">
+    <div class="row"><span class="cap"><span>Last minute</span><span id="gustNote"></span></span><canvas id="spark" aria-hidden="true"></canvas></div>
+    <div class="row"><label for="breeze">Breeze <output id="breezeOut"></output></label><input type="range" id="breeze" min="0" max="1" step="0.01"></div>
+    <div class="row"><label for="gusts">Gusts <output id="gustsOut"></output></label><input type="range" id="gusts" min="0" max="1" step="0.01"></div>
+    <div class="row"><label for="shade">Shade depth <output id="shadeOut"></output></label><input type="range" id="shade" min="0" max="1" step="0.01"></div>
+    <div class="row"><label for="light">Light</label>
+      <select id="light"><option value="natural">Afternoon sun</option><option value="mono">Black and white</option></select></div>
+    <div class="row"><label for="tree">Tree</label>
+      <select id="tree"><option value="olive">Olive</option><option value="maple">Japanese maple</option><option value="aspen">Aspen</option><option value="bamboo">Bamboo</option></select></div>
+    <div class="btns">
+      <button id="gust" type="button">Gust</button>
+      <button id="reseed" type="button">New tree</button>
+      <button id="pause" type="button">Pause</button>
+      <button id="sound" type="button" aria-pressed="true">Mute sound</button>
+    </div>
+    <p class="note">Tap the wall to send a gust from there; the leaves rustle with the wind once the page has been tapped. Each shadow softens with its branch's distance from the wall: the shrub against it stays crisp, the crown of the tree melts into pools of light.</p>
+  </div>
+</details>
+
+<script>
+(() => {
+'use strict';
+// ---------- host ----------
+// Everything the effect needs from the page it runs in. An installable package would swap this
+// block for one scoped to a single <komorebi-wall> element.
+const $ = (id) => document.getElementById(id);
+const viewW = () => innerWidth, viewH = () => innerHeight;
+const localX = (e) => e.clientX, localY = (e) => e.clientY;
+const onPage = (type, fn, opts) => addEventListener(type, fn, opts);
+const nextFrame = (fn) => requestAnimationFrame(fn);
+const newAudioContext = () => new (window.AudioContext || window.webkitAudioContext)();
+const smallScreen = () => Math.min(innerWidth, innerHeight) < 600;
+const onTeardown = () => {};   // the page never tears down
+// ---------- end host ----------
+const canvas = $('wall');
+const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, premultipliedAlpha: false, powerPreference: 'high-performance' });
+if (!gl) { $('nogl').hidden = false; $('tray').hidden = true; return; }
+const floatRT = !!gl.getExtension('EXT_color_buffer_float');
+const DEG = Math.PI / 180;
+
+// ---------- settings ----------
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+// Each slider's midpoint is the tuned look: a mostly mild breeze, weak spells, and now and then a gust
+// that swings the branches. Either half of the track scales from there to 0 or to double.
+const fromSlider = (v) => (v <= 0.5 ? v * 2 : 1 + (v - 0.5) * 2);
+const P = {};
+for (const k of ['breeze', 'gusts', 'shade']) {
+  const el = $(k), out = $(k + 'Out');
+  el.value = (k === 'breeze' || k === 'gusts') && reduced ? 0.3 : 0.5;
+  const upd = () => { P[k] = fromSlider(+el.value); out.textContent = Math.round(+el.value * 100) + '%'; };
+  el.addEventListener('input', upd); upd();
+}
+
+// ---------- randomness and noise ----------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+class Rng {
+  constructor(seed) { this.f = mulberry32(seed); }
+  n() { return this.f(); }
+  r(a, b) { return a + (b - a) * this.f(); }
+  g() { let u = 0; while (u === 0) u = this.f(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * this.f()); }
+  s() { return this.f() < 0.5 ? -1 : 1; }
+}
+const rand = (a, b) => a + (b - a) * Math.random();
+
+const PERM = new Uint8Array(256), GRAD = new Float32Array(256);
+{
+  const r = mulberry32(20261007);
+  for (let i = 0; i < 256; i++) PERM[i] = i;
+  for (let i = 255; i > 0; i--) { const j = (r() * (i + 1)) | 0; const tmp = PERM[i]; PERM[i] = PERM[j]; PERM[j] = tmp; }
+  for (let i = 0; i < 256; i++) GRAD[i] = r() * 2 - 1;
+}
+// 1-D gradient noise, roughly −1…1, one feature per unit
+function noise(x) {
+  const i = Math.floor(x), f = x - i;
+  const a = GRAD[PERM[i & 255]] * f;
+  const b = GRAD[PERM[(i + 1) & 255]] * (f - 1);
+  const u = f * f * f * (f * (f * 6 - 15) + 10);
+  return 2 * (a + (b - a) * u);
+}
+
+// ---------- the sun ----------
+// The sun stands up and to the left; its light rakes across the wall toward the lower right.
+const SUN_INC = 40 * DEG;                    // angle between the rays and the wall's normal
+const SUN_AZ = -38 * DEG;                    // direction the light travels along the wall
+const COS_INC = Math.cos(SUN_INC);
+const DIR_X = Math.cos(SUN_AZ), DIR_Y = Math.sin(SUN_AZ);
+const TX = Math.tan(SUN_INC) * DIR_X;        // a shadow slides this far (m) per metre of distance from the wall
+const TY = Math.tan(SUN_INC) * DIR_Y;
+const TO_SUN = [-Math.sin(SUN_INC) * DIR_X, -Math.sin(SUN_INC) * DIR_Y, COS_INC];
+const SUN_R = 0.00465 * 1.08;                // angular radius of the solar disc, plus a little aureole (rad)
+
+// Depth slices. Every leaf and twig is drawn into the slice nearest its distance from the wall, and
+// each slice is blurred by the sun's disc as seen from that distance: penumbra = distance × sun angle.
+const LAYER_Z = [0.2, 0.32, 0.52, 0.85, 1.38, 2.25, 3.65, 5.9, 9.5];
+const NL = LAYER_Z.length;
+const LOG_Z = LAYER_Z.map(Math.log);
+function layerOf(z) {
+  const l = Math.log(Math.max(0.05, z));
+  let best = 0, bd = Infinity;
+  for (let i = 0; i < NL; i++) { const d = Math.abs(l - LOG_Z[i]); if (d < bd) { bd = d; best = i; } }
+  return best;
+}
+
+// ---------- wind ----------
+const GUST_SPEED = 3.5;                      // m/s: how fast a gust front sweeps across the wall
+const wind = { base: 0.4, target: 0.42, nextShift: 7, gusts: [], nextGust: 9, dir: [1, 0, 0] };
+
+function windStep(t, dt) {
+  if (t >= wind.nextShift) {
+    const r = Math.random();
+    // a mild breeze nearly all the time, now and then a little lighter or fresher
+    wind.target = r < 0.15 ? rand(0.26, 0.34) : r < 0.95 ? rand(0.38, 0.5) : rand(0.52, 0.6);
+    wind.nextShift = t + rand(8, 20);
+  }
+  wind.base += (wind.target * P.breeze - wind.base) * (1 - Math.exp(-dt / 3.5));
+  if (t >= wind.nextGust) {
+    const g = P.gusts;
+    if (g > 0.02) {
+      const big = Math.random() < 0.15;      // the occasional real swing
+      spawnGust(t, (big ? rand(0.75, 1.0) : rand(0.25, 0.5)) * (0.55 + 0.45 * Math.min(g, 1.6)), null);
+      wind.nextGust = t + Math.max(10, -Math.log(1 - Math.random()) * 34 / g);
+    } else wind.nextGust = t + 2;
+  }
+  if (wind.gusts.length && wind.gusts[0].end < t) wind.gusts = wind.gusts.filter((gu) => gu.end >= t);
+  const psi = 18 * DEG + 22 * DEG * noise(t * 0.021 + 4.2);
+  const dx = Math.cos(psi), dy = 0.1, dz = Math.sin(psi) * 0.75;
+  const l = Math.hypot(dx, dy, dz);
+  wind.dir[0] = dx / l; wind.dir[1] = dy / l; wind.dir[2] = dz / l;
+}
+
+function spawnGust(t, amp, x0) {
+  const pulses = [];
+  const n = 1 + (Math.random() < 0.55 ? 1 : 0) + (Math.random() < 0.25 ? 1 : 0);
+  let at = 0;
+  for (let i = 0; i < n; i++) {
+    pulses.push({ at, amp: amp * (i ? rand(0.4, 0.8) : 1), rise: rand(0.6, 1.3), hold: rand(0.15, 0.8), decay: rand(1.0, 2.2) });
+    at += rand(0.9, 1.9);
+  }
+  wind.gusts.push({ t0: t, x0, pulses, end: t + at + 18 });
+}
+
+function gustEnv(p, tau) {
+  if (tau <= 0) return 0;
+  if (tau < p.rise) { const x = tau / p.rise; return p.amp * x * x * (3 - 2 * x); }
+  tau -= p.rise;
+  if (tau < p.hold) return p.amp;
+  return p.amp * Math.exp(-(tau - p.hold) / p.decay);
+}
+
+// Wind at a point along the wall: gust fronts arrive from upwind, or spread out from a tap.
+function windAt(t, x) {
+  const tr = t - (x + 1.5) / GUST_SPEED;
+  let w = wind.base * (1 + 0.07 * noise(tr * 0.13 + 3.1) + 0.04 * noise(tr * 0.41 + 7.7));
+  for (let i = 0; i < wind.gusts.length; i++) {
+    const g = wind.gusts[i];
+    const tau = (g.x0 === null ? tr : t - Math.abs(x - g.x0) / GUST_SPEED) - g.t0;
+    for (let j = 0; j < g.pulses.length; j++) w += gustEnv(g.pulses[j], tau - g.pulses[j].at);
+  }
+  return Math.min(1.45, Math.max(0, w));
+}
+
+// ---------- the tree, laid out in shadow space (metres on the wall, plus distance from it) ----------
+// Three tiers at very different distances: the crown of a tree 4–10 m out, its lower limbs
+// 1–3.5 m out, and a shrub right against the wall.
+const TIER = {
+  far:  { r0: 0.018, twigR: 0.0038, twigGap: [0.09, 0.16], twigLen: [0.18, 0.45], sub: [1, 2], zSpread: 1.0, droop: 0.55, twigDroop: 1.3,
+          leafLen: [0.075, 0.105], leafGap: [0.02, 0.032], leafFrom: 0.38, f: [0.22, 0.36], zeta: [0.1, 0.16], gs: 0.07, gt: 0.06 },
+  mid:  { r0: 0.011, twigR: 0.0026, twigGap: [0.055, 0.09], twigLen: [0.12, 0.3], sub: [0, 2], zSpread: 0.35, droop: 0.6, twigDroop: 1.4,
+          leafLen: [0.07, 0.1], leafGap: [0.02, 0.03], leafFrom: 0.15, f: [0.38, 0.6], zeta: [0.12, 0.18], gs: 0.045, gt: 0.04 },
+  near: { r0: 0.006, twigR: 0.0017, twigGap: [0.065, 0.11], twigLen: [0.08, 0.2], sub: [0, 1], zSpread: 0.07, droop: 0.4, twigDroop: 1.2,
+          leafLen: [0.065, 0.09], leafGap: [0.022, 0.034], leafFrom: 0.12, f: [0.65, 1.0], zeta: [0.14, 0.2], gs: 0.024, gt: 0.022 },
+};
+
+// What grows there. Leaf sizes scale the tiers' leafLen; shape 0 is a pointed blade (base exponent sa,
+// fullness sb), shape 1 a Japanese maple's fan of sharp lobes. flutter scales how readily the leaves move.
+const SPECIES = {
+  // narrow grey-green blades on short stalks, alternate along the twig
+  olive:  { len: 1, ratio: [0.24, 0.34], sa: [0.68, 0.85], sb: [0.85, 1.0], pet: [0.08, 0.14], shape: 0, bend: 0.09,
+            gap: 1, from: 0, spread: [0.5, 1.05], hang: [0.1, 0.55], flutter: 1, pairs: false },
+  // star-shaped leaves of long pointed lobes, in opposite pairs, held out flat on long stalks
+  maple:  { len: 0.85, ratio: [1.0, 1.15], sa: [0.78, 0.9], sb: [0.8, 1.0], pet: [0.35, 0.55], shape: 1, bend: 0.05,
+            gap: 2.5, from: 0, spread: [0.8, 1.4], hang: [0, 0.3], flutter: 1.1, pairs: true },
+  // round leaves on long, flattened stalks that let them tremble in the faintest air
+  aspen:  { len: 0.78, ratio: [0.85, 1.0], sa: [0.75, 0.9], sb: [0.5, 0.65], pet: [0.35, 0.5], shape: 0, bend: 0.05,
+            gap: 1.4, from: 0, spread: [0.6, 1.3], hang: [0.3, 0.8], flutter: 1.8, pairs: false },
+  // long narrow blades fanned out in clusters at the ends of fine twigs
+  bamboo: { len: 1.6, ratio: [0.11, 0.15], sa: [0.55, 0.7], sb: [1.0, 1.3], pet: [0.03, 0.06], shape: 0, bend: 0.15,
+            gap: 0.65, from: 0.35, spread: [0.3, 0.85], hang: [0.4, 0.9], flutter: 1.3, pairs: false },
+};
+let species = SPECIES.olive;
+
+function angDiff(to, from) { return Math.atan2(Math.sin(to - from), Math.cos(to - from)); }
+
+function compose(rng, hw, hh) {
+  const flip = rng.n() < 0.5;
+  const K = hw + hh;
+  const out = [];
+  const add = (tier, u, v, deg, lenK, depth, dz) => {
+    let a = deg * DEG;
+    if (flip) a = Math.PI - a;
+    out.push({ tier, x: (flip ? -u : u) * hw, y: v * hh, ang: a, len: lenK * K, depth, dz });
+  };
+  // crown: soft masses across the top and one side, with sun-disc dapples in the gaps
+  add('far', rng.r(-0.4, 0.1), 1.15, rng.r(-58, -38), rng.r(1.15, 1.45), rng.r(7, 9.5), -rng.r(0.5, 2));
+  add('far', 1.15, rng.r(0.25, 0.75), rng.r(195, 215), rng.r(0.85, 1.1), rng.r(5, 7.5), rng.r(-1, 1));
+  add('far', rng.r(0.45, 0.9), 1.15, rng.r(-100, -80), rng.r(0.7, 0.9), rng.r(4, 6), rng.r(-0.8, 0.8));
+  if (rng.n() < 0.6) add('far', -1.15, rng.r(0.7, 1.0), rng.r(-20, 0), rng.r(0.8, 1.0), rng.r(6, 9), rng.r(-1, 1));
+  // lower limbs
+  add('mid', -1.15, rng.r(0.5, 0.9), rng.r(-30, -12), rng.r(0.85, 1.05), rng.r(2, 3.4), rng.r(-0.5, 0.5));
+  add('mid', rng.r(0.2, 0.6), 1.15, rng.r(-118, -96), rng.r(0.6, 0.8), rng.r(1.2, 2.0), rng.r(-0.3, 0.3));
+  if (rng.n() < 0.5) add('mid', -1.15, rng.r(-0.65, -0.3), rng.r(4, 20), rng.r(0.55, 0.75), rng.r(1.0, 1.7), rng.r(-0.2, 0.2));
+  // the shrub near the wall: the sharpest shadows, still softened by half a metre of air
+  add('near', -1.15, rng.r(-0.05, 0.35), rng.r(-14, 6), rng.r(0.75, 0.95), rng.r(0.55, 0.75), rng.r(-0.06, 0.06));
+  if (rng.n() < 0.7) add('near', rng.r(-0.75, -0.45), 1.15, rng.r(-88, -66), rng.r(0.42, 0.58), rng.r(0.75, 1.05), rng.r(-0.08, 0.08));
+  return out;
+}
+
+function growPath(rng, o) {
+  const n = Math.max(2, Math.ceil(o.len / o.seg));
+  const step = o.len / n;
+  const pts = [];
+  let x = o.x, y = o.y, a = o.ang;
+  for (let i = 0; i <= n; i++) {
+    const s = i / n;
+    pts.push(x, y, o.z + o.dz * s, o.r0 + (o.r1 - o.r0) * s, a);
+    x += Math.cos(a) * step;
+    y += Math.sin(a) * step;
+    a += o.curv * step + rng.g() * o.wobble * Math.sqrt(step);
+    a += angDiff(-Math.PI / 2, a) * Math.min(1, o.droop * step * (0.25 + s));   // weight pulls the tip down
+  }
+  return pts;
+}
+
+// Each bough and twig sways as a damped spring, pushed by the wind and by turbulence.
+function makeOsc(rng, f, zeta, gs, gt, ftK = [0.5, 0.95], wExp = 1.8) {
+  const w = 2 * Math.PI * f;
+  return { w, c: 2 * zeta * w, gs, gt, wExp, ft: f * rng.r(ftK[0], ftK[1]),
+    ph: [rng.r(0, 400), rng.r(0, 400), rng.r(0, 400)],
+    d: [0, 0, 0], v: [0, 0, 0], a: [0, 0, 0], F: [0, 0, 0] };
+}
+
+function addPath(sc, rng, flat, parent, attach, osc, base0) {
+  const n = flat.length / 5;
+  const B = {
+    n, parent, attach, osc, len: 0, root: null, W: 0, wseed: rng.r(0, 100), cx: 0, ba: [0, 0, 0],
+    x: new Float32Array(n), y: new Float32Array(n), z: new Float32Array(n), r: new Float32Array(n), ang: new Float32Array(n),
+    phi: new Float32Array(n),
+    dx: new Float32Array(n), dy: new Float32Array(n), dz: new Float32Array(n),
+    sx: new Float32Array(n), sy: new Float32Array(n),
+  };
+  let cx = 0;
+  for (let k = 0; k < n; k++) {
+    B.x[k] = flat[k * 5]; B.y[k] = flat[k * 5 + 1]; B.z[k] = flat[k * 5 + 2]; B.r[k] = flat[k * 5 + 3]; B.ang[k] = flat[k * 5 + 4];
+    const s = k / (n - 1);
+    B.phi[k] = base0 + (1 - base0) * (s * s * (6 - 4 * s + s * s) / 3);   // a cantilever's bending shape
+    B.sx[k] = B.x[k]; B.sy[k] = B.y[k];
+    cx += B.x[k];
+  }
+  B.cx = cx / n;
+  B.root = parent ? parent.root : B;
+  sc.paths.push(B);
+  return B;
+}
+
+function growBough(rng, sc, sp) {
+  const T = TIER[sp.tier];
+  const len = sp.len;
+  const flat = growPath(rng, { x: sp.x, y: sp.y, z: sp.depth, dz: sp.dz, ang: sp.ang, len, seg: 0.03,
+    r0: T.r0 * rng.r(0.8, 1.2), r1: T.r0 * 0.3, curv: rng.r(-0.35, 0.35), wobble: 0.07, droop: T.droop });
+  const sizeK = 0.55 + 0.45 * Math.min(1.6, len);
+  const bough = addPath(sc, rng, flat, null, 0,
+    makeOsc(rng, rng.r(T.f[0], T.f[1]), rng.r(T.zeta[0], T.zeta[1]), T.gs * sizeK, T.gt * sizeK), 0.3);
+  bough.len = len;
+  let s = len * rng.r(0.06, 0.14), side = rng.s();
+  while (s < len * 0.96) {
+    const k = Math.round((s / len) * (bough.n - 1));
+    const tl = (T.twigLen[1] - (T.twigLen[1] - T.twigLen[0]) * 0.65 * (s / len)) * rng.r(0.7, 1.2);
+    const twig = growTwig(rng, sc, bough, k, side, tl, T.twigR, T, 0.018);
+    const nsub = Math.round(rng.r(T.sub[0], T.sub[1] + 0.49) * Math.min(1, tl / 0.2));
+    for (let j = 0; j < nsub; j++) {
+      const kk = Math.round(rng.r(0.3, 0.8) * (twig.n - 1));
+      growTwig(rng, sc, twig, kk, rng.s(), tl * rng.r(0.3, 0.55), T.twigR * 0.6, T, 0.014);
+    }
+    s += rng.r(T.twigGap[0], T.twigGap[1]);
+    if (rng.n() < 0.8) side = -side;
+  }
+  addLeaves(rng, sc, bough, T, 0.8);
+}
+
+function growTwig(rng, sc, parent, k, side, tl, r, T, seg) {
+  const z0 = parent.z[k];
+  const zTip = Math.max(0.12, z0 + rng.r(-1, 1) * T.zSpread);   // twigs reach toward or away from the wall
+  const flat = growPath(rng, { x: parent.x[k], y: parent.y[k], z: z0, dz: zTip - z0, ang: parent.ang[k] + side * rng.r(0.45, 0.95),
+    len: tl, seg, r0: r, r1: r * 0.45, curv: rng.r(-1.6, 1.6), wobble: 0.1, droop: T.twigDroop });
+  const f = Math.min(2.6, Math.max(0.9, 0.55 / Math.sqrt(tl)));
+  // Twigs are light springs: lightly damped so they bounce and ring after a push, shaken by eddies
+  // near their own frequency, and stirred by wind well before the heavy limbs move.
+  const g = tl / 0.25;
+  const twig = addPath(sc, rng, flat, parent, k,
+    makeOsc(rng, f, rng.r(0.07, 0.13), 0.008 + 0.01 * g, 0.012 + 0.012 * g, [0.7, 1.25], 1.25), 0);
+  twig.len = tl;
+  addLeaves(rng, sc, twig, T, T.leafFrom);   // the crown's leaves bunch toward the twig ends
+  return twig;
+}
+
+function addLeaves(rng, sc, B, T, from) {
+  const last = B.n - 1;
+  const sp = species;
+  from = Math.min(0.9, from + sp.from * (1 - from));
+  let s = from * B.len + rng.r(0, T.leafGap[0] * sp.gap);
+  let side = rng.s();
+  while (s < B.len - 0.006) {
+    const k = Math.min(last, Math.round((s / B.len) * last));
+    pushLeaf(rng, sc, B, k, side, T, s / B.len);
+    if (sp.pairs) pushLeaf(rng, sc, B, k, -side, T, s / B.len);
+    s += rng.r(T.leafGap[0], T.leafGap[1]) * sp.gap;
+    if (sp.pairs) side = rng.s(); else if (rng.n() < 0.85) side = -side;
+  }
+  pushLeaf(rng, sc, B, last, 0, T, 1);
+}
+
+function pushLeaf(rng, sc, B, k, side, T, tip) {
+  const terminal = side === 0;
+  const sp = species;
+  const len = rng.r(T.leafLen[0], T.leafLen[1]) * sp.len * (1 - 0.3 * tip * tip * tip) * (terminal ? 0.85 : 1);
+  let phi = B.ang[k] + (terminal ? rng.g() * 0.15 : side * rng.r(sp.spread[0], sp.spread[1]));
+  phi += angDiff(-Math.PI / 2, phi) * rng.r(sp.hang[0], sp.hang[1]);   // leaves hang a little
+  const e = Math.max(-1.1, Math.min(1.1, rng.g() * 0.5));          // and tilt toward or away from the wall
+  const ux = Math.cos(phi) * Math.cos(e), uy = Math.sin(phi) * Math.cos(e), uz = Math.sin(e);
+  // blades turn loosely toward the sun
+  let nx = TO_SUN[0] + rng.g() * 0.55, ny = TO_SUN[1] + rng.g() * 0.55, nz = TO_SUN[2] + rng.g() * 0.35;
+  const d = nx * ux + ny * uy + nz * uz;
+  nx -= d * ux; ny -= d * uy; nz -= d * uz;
+  let nl = Math.hypot(nx, ny, nz);
+  if (nl < 1e-3) { nx = -uy; ny = ux; nz = 0; nl = Math.hypot(nx, ny) || 1; }
+  nx /= nl; ny /= nl; nz /= nl;
+  sc.leaves.push({
+    B, k, len, wid: len * rng.r(sp.ratio[0], sp.ratio[1]),
+    ux, uy, uz, nx, ny, nz,
+    vx: ny * uz - nz * uy, vy: nz * ux - nx * uz, vz: nx * uy - ny * ux,
+    pet: rng.r(sp.pet[0], sp.pet[1]), sa: rng.r(sp.sa[0], sp.sa[1]), sb: rng.r(sp.sb[0], sp.sb[1]), bend: rng.g() * sp.bend,
+    shape: sp.shape, fl: sp.flutter,
+    op: rng.r(0.95, 0.99), lr: 0, lp: 0,
+    layer: layerOf(B.z[k]),
+    seed: rng.r(0, 1000), ph: rng.r(0, 100), lift: rng.r(0.3, 1), drive: rng.r(0.8, 1.25),
+    wr: 2 * Math.PI * rng.r(4, 8), wp: 2 * Math.PI * rng.r(2.5, 5), wy: 2 * Math.PI * rng.r(1.8, 3.5), z: rng.r(0.07, 0.14),
+    ar: 0, vr: 0, ap: 0, vp: 0, ay: 0, vyw: 0,
+    wb: 2 * Math.PI * rng.r(6, 11), bn: 0, vbn: 0, bv: 0, vbv: 0,
+  });
+}
+
+function ranges(list) {
+  const r = Array.from({ length: NL }, () => [0, 0]);
+  for (let i = 0; i < list.length; i++) { const l = list[i].layer; if (!r[l][1]) r[l][0] = i; r[l][1]++; }
+  return r;
+}
+
+function buildScene(seed) {
+  const rng = new Rng(seed);
+  const sc = { paths: [], leaves: [] };
+  for (const sp of compose(rng, wallW / 2, wallH / 2)) growBough(rng, sc, sp);
+  const segs = [];
+  for (const B of sc.paths) {
+    for (let k = 0; k < B.n - 1; k++) segs.push({ B, k, layer: layerOf(0.5 * (B.z[k] + B.z[k + 1])) });
+  }
+  segs.sort((a, b) => a.layer - b.layer);
+  sc.leaves.sort((a, b) => a.layer - b.layer);
+  sc.segs = segs;
+  sc.segRange = ranges(segs);
+  sc.leafRange = ranges(sc.leaves);
+  return sc;
+}
+
+// ---------- motion ----------
+const KAPPA = 0.8;   // how strongly a twig lags behind its accelerating base: the whip after a swing
+
+function simulate(t, dt) {
+  windStep(t, dt);
+  const paths = scene.paths;
+  for (let i = 0; i < paths.length; i++) {
+    const B = paths[i];
+    B.W = B.root === B ? windAt(t, B.cx) : B.root.W * (1 + 0.14 * noise(t * 0.6 + B.wseed));
+    const o = B.osc, W = B.W;
+    const rate = o.ft * (0.6 + 0.8 * W);
+    o.ph[0] += dt * rate; o.ph[1] += dt * rate * 1.13; o.ph[2] += dt * rate * 0.89;
+    // heavy limbs barely stir in light air and come alive in gusts; leafy branches also streamline
+    const wt = Math.pow(W, o.wExp), w2 = o.w * o.w;
+    const nx = noise(o.ph[0]) + 0.4 * noise(o.ph[0] * 2.7 + 13.1);
+    const ny = noise(o.ph[1] + 41.3) + 0.4 * noise(o.ph[1] * 2.3 + 5.7);
+    const nz = noise(o.ph[2] + 87.9) + 0.4 * noise(o.ph[2] * 2.5 + 9.2);
+    o.F[0] = w2 * wt * (o.gs * wind.dir[0] + o.gt * nx);
+    o.F[1] = w2 * wt * (o.gs * wind.dir[1] + o.gt * ny * 0.55);
+    o.F[2] = w2 * wt * (o.gs * wind.dir[2] + o.gt * nz * 0.9);
+  }
+  const sub = Math.max(1, Math.ceil(dt * 240)), h = dt / sub;
+  for (let s = 0; s < sub; s++) {
+    for (let i = 0; i < paths.length; i++) {
+      const B = paths[i], o = B.osc;
+      if (B.parent) {
+        const Q = B.parent, ph = Q.phi[B.attach];
+        B.ba[0] = Q.ba[0] + Q.osc.a[0] * ph; B.ba[1] = Q.ba[1] + Q.osc.a[1] * ph; B.ba[2] = Q.ba[2] + Q.osc.a[2] * ph;
+      }
+      const w2 = o.w * o.w;
+      for (let j = 0; j < 3; j++) {
+        const a = o.F[j] - w2 * o.d[j] - o.c * o.v[j] - KAPPA * B.ba[j];
+        o.v[j] += a * h; o.d[j] += o.v[j] * h; o.a[j] = a;
+      }
+    }
+  }
+  for (let i = 0; i < paths.length; i++) {
+    const B = paths[i];
+    let bx = 0, by = 0, bz = 0;
+    if (B.parent) { const Q = B.parent, k = B.attach; bx = Q.dx[k]; by = Q.dy[k]; bz = Q.dz[k]; }
+    const d = B.osc.d;
+    for (let k = 0; k < B.n; k++) {
+      const ph = B.phi[k];
+      const dx = bx + d[0] * ph, dy = by + d[1] * ph, dz = bz + d[2] * ph;
+      B.dx[k] = dx; B.dy[k] = dy; B.dz[k] = dz;
+      // moving toward or away from the wall slides a branch's shadow along the light
+      B.sx[k] = B.x[k] + dx + dz * TX; B.sy[k] = B.y[k] + dy + dz * TY;
+    }
+  }
+}
+
+const LEAF_INERTIA = 1.5;
+let leafMotion = 0;   // how fast the leaves are turning on average (rad/s): what the rustle is made of
+function fillInstances(t, dt) {
+  const segs = scene.segs;
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i], B = s.B, k = s.k, o = i * 4;
+    segDyn[o] = B.sx[k]; segDyn[o + 1] = B.sy[k]; segDyn[o + 2] = B.sx[k + 1]; segDyn[o + 3] = B.sy[k + 1];
+  }
+  const leaves = scene.leaves;
+  const sub = Math.max(1, Math.ceil(dt * 240)), h = dt / sub;
+  let turn = 0;
+  for (let i = 0; i < leaves.length; i++) {
+    const L = leaves[i], B = L.B, W = B.W;
+    // Each leaf is its own small spring on its stalk: twist (roll), lift (pitch) and side-swing (yaw).
+    // Light and stiff, it rings at 2–8 Hz and answers the small, fast eddies that a branch is far too
+    // heavy to notice, so it trembles in air that leaves the branches still. Drag on a blade grows
+    // almost in step with the wind, much sooner than on a branch.
+    const Wl = Math.pow(W, 0.9);
+    L.ph += dt * L.drive * (1.5 + 7 * W);                          // flutter quickens with the wind (≈ 0.2 · speed / leaf length)
+    const act = 0.65 + 0.35 * noise(t * 0.23 + L.seed);            // some leaves are restless, some still
+    const actL = act * L.fl;
+    const tr = (0.1 + 0.9 * Wl) * actL * noise(L.ph + L.seed);
+    const tp = (0.05 + 0.5 * Wl) * actL * noise(L.ph * 0.83 + L.seed * 1.31 + 11.3) + 0.22 * W * W * L.lift;
+    const ty = (0.05 + 0.35 * Wl) * actL * noise(L.ph * 0.67 + L.seed * 0.71 + 23.9);
+    const tbn = (0.015 + 0.07 * Wl) * actL * noise(L.ph * 1.37 + L.seed * 2.1 + 41.7);   // tip bend, in leaf lengths
+    const tbv = (0.01 + 0.04 * Wl) * actL * noise(L.ph * 1.21 + L.seed * 1.7 + 63.1);
+    // when its twig jerks, the leaf lags behind and swings back
+    const ph = B.phi[L.k];
+    const ax = B.ba[0] + B.osc.a[0] * ph, ay = B.ba[1] + B.osc.a[1] * ph, az = B.ba[2] + B.osc.a[2] * ph;
+    const an = (ax * L.nx + ay * L.ny + az * L.nz) * LEAF_INERTIA / L.len, av = (ax * L.vx + ay * L.vy + az * L.vz) * LEAF_INERTIA / L.len;
+    for (let s = 0; s < sub; s++) {
+      L.vr += (L.wr * L.wr * (tr - L.ar) - 2 * L.z * L.wr * L.vr - 0.4 * an) * h; L.ar += L.vr * h;
+      L.vp += (L.wp * L.wp * (tp - L.ap) - 2 * L.z * L.wp * L.vp - an) * h; L.ap += L.vp * h;
+      L.vyw += (L.wy * L.wy * (ty - L.ay) - 2 * L.z * L.wy * L.vyw - av) * h; L.ay += L.vyw * h;
+      // the blade itself is the last, smallest branch: its tip bends and bounces on the midrib,
+      // lagging when the leaf swings and when its twig jerks
+      const accP = L.wp * L.wp * (tp - L.ap) - 2 * L.z * L.wp * L.vp - an;
+      const accY = L.wy * L.wy * (ty - L.ay) - 2 * L.z * L.wy * L.vyw - av;
+      L.vbn += (L.wb * L.wb * (tbn - L.bn) - 2 * 0.1 * L.wb * L.vbn - 0.5 * an - 0.06 * accP) * h; L.bn += L.vbn * h;
+      L.vbv += (L.wb * L.wb * (tbv - L.bv) - 2 * 0.1 * L.wb * L.vbv - 0.5 * av - 0.06 * accY) * h; L.bv += L.vbv * h;
+    }
+    const roll = L.ar, pitch = L.ap, yaw = L.ay;
+    const ca = Math.cos(roll), sa = Math.sin(roll);
+    const v1x = L.vx * ca + L.nx * sa, v1y = L.vy * ca + L.ny * sa, v1z = L.vz * ca + L.nz * sa;
+    const n1x = L.nx * ca - L.vx * sa, n1y = L.ny * ca - L.vy * sa, n1z = L.nz * ca - L.vz * sa;
+    const cb = Math.cos(pitch), sb = Math.sin(pitch);
+    const u2x = L.ux * cb + n1x * sb, u2y = L.uy * cb + n1y * sb, u2z = L.uz * cb + n1z * sb;
+    const cg = Math.cos(yaw), sg = Math.sin(yaw);
+    const ux = u2x * cg + v1x * sg, uy = u2y * cg + v1y * sg, uz = u2z * cg + v1z * sg;
+    const vx = v1x * cg - u2x * sg, vy = v1y * cg - u2y * sg, vz = v1z * cg - u2z * sg;
+    turn += Math.abs(roll - L.lr) + Math.abs(pitch - L.lp); L.lr = roll; L.lp = pitch;
+    const o = i * 8;
+    leafDyn[o] = B.sx[L.k];
+    leafDyn[o + 1] = B.sy[L.k];
+    // the blade projected along the sun's rays: a leaf turning edge-on to the sun thins to a sliver
+    leafDyn[o + 2] = (ux + uz * TX) * L.len;
+    leafDyn[o + 3] = (uy + uz * TY) * L.len;
+    leafDyn[o + 4] = (vx + vz * TX) * L.wid;
+    leafDyn[o + 5] = (vy + vz * TY) * L.wid;
+    // tip bend, projected, then expressed in the blade's own frame for the shader: a = along, b = across
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const dx = (L.bn * nx + L.bv * vx) * L.len, dy = (L.bn * ny + L.bv * vy) * L.len, dz = (L.bn * nz + L.bv * vz) * L.len;
+    const Dx = dx + dz * TX, Dy = dy + dz * TY;
+    const Ux = leafDyn[o + 2], Uy = leafDyn[o + 3], Vx = leafDyn[o + 4], Vy = leafDyn[o + 5];
+    const det = Ux * Vy - Uy * Vx;
+    if (Math.abs(det) > 1e-9) {
+      leafDyn[o + 6] = Math.max(-0.35, Math.min(0.35, (Dx * Vy - Dy * Vx) / det));
+      leafDyn[o + 7] = Math.max(-1, Math.min(1, (Ux * Dy - Uy * Dx) / det));
+    } else { leafDyn[o + 6] = 0; leafDyn[o + 7] = 0; }
+  }
+  leafMotion = dt > 0 && leaves.length ? turn / leaves.length / dt : 0;
+}
+
+// ---------- falling leaves ----------
+// Now and then a leaf lets go, more often in a gust. It falls at about a metre a second, drifts
+// with the wind, swings side to side like a pendulum and tumbles, and its shadow crosses the
+// wall sharp or soft depending on how far from the wall it falls.
+const FLY_MAX = 4;
+const flyers = [];
+const flyDyn = new Float32Array(FLY_MAX * 8), flyStat = new Float32Array(FLY_MAX * 8);
+let flyRange = Array.from({ length: NL }, () => [0, 0]), flyCount = 0, nextFly = 25 + Math.random() * 30;
+
+function spawnFlyer(t) {
+  const z = Math.exp(rand(Math.log(0.4), Math.log(5)));
+  const sp = species, len = rand(0.065, 0.095) * sp.len;
+  // x, y are where its shadow falls; moving toward or away from the wall slides the shadow along the light
+  // start just above the wall's top edge, anywhere across it
+  const x = rand(-0.6, 0.5) * wallW, y = 0.5 * wallH + 0.12 + rand(0, 0.1);
+  const a = rand(0, Math.PI * 2), e = rand(-0.6, 0.6);
+  const ux = Math.cos(a) * Math.cos(e), uy = Math.sin(a) * Math.cos(e), uz = Math.sin(e);
+  let nx = rand(-1, 1), ny = rand(-1, 1), nz = rand(-1, 1);
+  const d = nx * ux + ny * uy + nz * uz; nx -= d * ux; ny -= d * uy; nz -= d * uz;
+  const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+  flyers.push({ x, y, z, z0: z, vx: 0, vy: -0.4, vz: 0, len, wid: len * rand(sp.ratio[0], sp.ratio[1]), ux, uy, uz, nx, ny, nz,
+    vxv: ny * uz - nz * uy, vyv: nz * ux - nx * uz, vzv: nx * uy - ny * ux,
+    fall: rand(0.6, 1.1), swing: rand(0.08, 0.2), swingW: 2 * Math.PI * rand(0.5, 0.9), spin: rand(2, 8) * (Math.random() < 0.5 ? -1 : 1),
+    roll: 0, t0: t, seed: rand(0, 100), layer: layerOf(z),
+    stat: [rand(sp.pet[0], sp.pet[1]), rand(sp.sa[0], sp.sa[1]), rand(sp.sb[0], sp.sb[1]), rand(-0.12, 0.12), 0.0007, rand(0.95, 0.99), sp.shape, 0] });
+}
+
+function stepFlyers(t, dt) {
+  if (dt > 0) {
+    const W = windAt(t, 0);
+    // seldom: about one a minute in a breeze, a little more often in a gust
+    nextFly -= dt * (0.5 + 1.5 * W * W);
+    if (nextFly <= 0) { if (flyers.length < FLY_MAX) spawnFlyer(t); nextFly = 30 + Math.random() * 60; }
+  }
+  for (let i = flyers.length - 1; i >= 0; i--) {
+    const f = flyers[i];
+    if (dt > 0) {
+      const W = windAt(t, f.x), air = 0.25 * W * 7.2;   // the leaf rides a share of the breeze
+      const gx = air * wind.dir[0] + 0.15 * W * noise(t * 1.3 + f.seed);
+      const gy = -f.fall + 0.6 * W * W * noise(t * 0.9 + f.seed + 7);   // a gust can loft it
+      const gz = air * wind.dir[2] * 0.5;
+      const k = 1 - Math.exp(-dt / 0.35);
+      f.vx += (gx - f.vx) * k; f.vy += (gy - f.vy) * k; f.vz += (gz - f.vz) * k;
+      const age = t - f.t0, sw = f.swing * f.swingW * Math.cos(f.swingW * age);   // pendulum zigzag
+      f.x += (f.vx + sw) * dt; f.y += f.vy * dt; f.z = Math.max(0.25, f.z + f.vz * dt * 0.3);
+      f.roll += f.spin * dt * (0.6 + W);
+      f.pitch = 0.6 * Math.sin(f.swingW * age);   // it rocks as it swings
+    }
+    const sx = f.x + (f.z - f.z0) * TX, sy = f.y + (f.z - f.z0) * TY;
+    if (sy < -0.5 * wallH - 0.3 || Math.abs(sx) > 0.5 * wallW + 0.6) flyers.splice(i, 1);
+  }
+  // pack them by depth slice for drawing
+  const order = flyers.slice().sort((a, b) => a.layer - b.layer);
+  flyRange = Array.from({ length: NL }, () => [0, 0]);
+  order.forEach((f, i) => {
+    const r = flyRange[f.layer]; if (!r[1]) r[0] = i; r[1]++;
+    const ca = Math.cos(f.roll), sa = Math.sin(f.roll), cb = Math.cos(f.pitch || 0), sb = Math.sin(f.pitch || 0);
+    const v1x = f.vxv * ca + f.nx * sa, v1y = f.vyv * ca + f.ny * sa, v1z = f.vzv * ca + f.nz * sa;
+    const n1x = f.nx * ca - f.vxv * sa, n1y = f.ny * ca - f.vyv * sa, n1z = f.nz * ca - f.vzv * sa;
+    const ux = f.ux * cb + n1x * sb, uy = f.uy * cb + n1y * sb, uz = f.uz * cb + n1z * sb;
+    const o = i * 8;
+    flyDyn[o] = f.x + (f.z - f.z0) * TX; flyDyn[o + 1] = f.y + (f.z - f.z0) * TY;
+    flyDyn[o + 2] = (ux + uz * TX) * f.len; flyDyn[o + 3] = (uy + uz * TY) * f.len;
+    flyDyn[o + 4] = (v1x + v1z * TX) * f.wid; flyDyn[o + 5] = (v1y + v1z * TY) * f.wid;
+    flyDyn[o + 6] = 0; flyDyn[o + 7] = 0.15 * Math.sin(f.roll * 0.5);   // a loose leaf is a little curled
+    flyStat.set(f.stat, i * 8);
+  });
+  flyCount = order.length;
+}
+
+// ---------- shaders ----------
+const VS_LEAF = `#version 300 es
+layout(location=0) in vec2 a_corner;
+layout(location=1) in vec2 a_base;
+layout(location=2) in vec2 a_u;
+layout(location=3) in vec2 a_v;
+layout(location=4) in vec4 a_shape;   // petiole share, base exponent, fullness, midrib bend
+layout(location=5) in vec2 a_misc;    // petiole half-width (m), opacity
+layout(location=6) in vec2 a_bend;    // the blade bending, tip offset along and across it
+layout(location=7) in vec2 a_kind;    // x: 0 pointed blade, 1 maple
+uniform vec4 u_rect;                  // centre.xy, half-size.xy (m)
+uniform float u_texel;                // metres per texel
+out vec2 v_st;
+flat out vec4 v_shape;
+flat out vec2 v_misc;
+flat out vec2 v_bend;
+flat out float v_kind;
+void main() {
+  float lu = max(length(a_u), 1e-6);
+  float lv = max(length(a_v), 1e-6);
+  float padS = 2.0 * u_texel / lu;
+  float padT = 2.0 * u_texel / lv;
+  float tPet = a_misc.x / lv;
+  float s = mix(-a_shape.x - padS, 1.0 + max(a_bend.x, 0.0) + padS, a_corner.x);
+  float ext = max(0.5 + abs(a_shape.w) + abs(a_bend.y), tPet) + padT;
+  float t = mix(-ext, ext, a_corner.y);
+  vec2 wp = a_base + s * a_u + t * a_v;
+  v_st = vec2(s, t);
+  v_shape = a_shape;
+  v_misc = vec2(tPet, a_misc.y);
+  v_bend = a_bend;
+  v_kind = a_kind.x;
+  gl_Position = vec4((wp - u_rect.xy) / u_rect.zw, 0.0, 1.0);
+}`;
+
+const FS_LEAF = `#version 300 es
+precision highp float;
+in vec2 v_st;
+flat in vec4 v_shape;
+flat in vec2 v_misc;
+flat in vec2 v_bend;
+flat in float v_kind;
+uniform vec3 u_leafT;
+out vec4 o;
+// share of the filter footprint [d-h, d+h] that falls inside [-r, r]
+float band(float d, float h, float r) {
+  return clamp((min(d + h, r) - max(d - h, -r)) / (2.0 * h), 0.0, 1.0);
+}
+void main() {
+  float t = v_st.y;
+  float s = v_st.x - v_bend.x * max(v_st.x, 0.0) * max(v_st.x, 0.0);   // undo the stretch of a bent blade
+  vec2 fw = max(fwidth(v_st) * 0.5, vec2(1e-6));
+  float p = v_shape.x;
+  float sb = clamp(s, 0.0, 1.0);
+  float hw = 0.5 * pow(max(sin(3.14159265 * pow(sb, v_shape.y)), 0.0), v_shape.z);
+  float c = (v_shape.w + v_bend.y) * sb * sb;
+  float blade = band(t - c, fw.y, hw) * band(s - 0.5, fw.x, 0.5);
+  float petEnd = 0.06;
+  if (v_kind > 0.5) {
+    // Japanese maple: five to seven long, narrow, sharp lobes fanned out from where the stalk joins,
+    // cut almost to the centre, the middle lobe longest, the outer pair short, toothed edges
+    vec2 q = vec2(s - 0.38, t - c);
+    float spread = 0.6 + (v_shape.y - 0.8) * 1.2;   // angle between neighbouring lobes
+    float f = length(q) - 0.1;                       // the small palm
+    for (int i = -3; i <= 3; i++) {
+      float fi = float(i), a = fi * spread;
+      float L = 0.62 * (1.0 - 0.07 * abs(fi) - 0.06 * fi * fi);
+      vec2 d = vec2(cos(a), sin(a));
+      float x = dot(q, d), y = dot(q, vec2(-d.y, d.x));
+      float u = clamp(x / L, 0.0, 1.0);
+      float w = 0.22 * v_shape.z * L * pow(sin(3.14159265 * sqrt(u)), 0.9) * (1.0 - 0.22 * fract(u * 9.0));
+      f = min(f, max(abs(y) - w, max(-x, x - L)));
+    }
+    blade = clamp(0.5 - f / max(fwidth(f), 1e-5), 0.0, 1.0);
+    petEnd = 0.38;
+  }
+  float pet = band(t, fw.y, v_misc.x) * band(s - (petEnd - p) * 0.5, fw.x, (petEnd + p) * 0.5);
+  float cov = max(blade, pet) * v_misc.y;
+  o = vec4(mix(vec3(1.0), u_leafT, cov), 1.0);
+}`;
+
+const VS_SEG = `#version 300 es
+layout(location=0) in vec2 a_corner;
+layout(location=1) in vec4 a_seg;
+layout(location=2) in vec2 a_rad;
+uniform vec4 u_rect;
+uniform float u_texel;
+out vec2 v_p;
+flat out vec4 v_seg;
+flat out vec2 v_rad;
+void main() {
+  vec2 p0 = a_seg.xy, p1 = a_seg.zw;
+  vec2 d = p1 - p0;
+  float L = length(d);
+  vec2 dir = L > 1e-7 ? d / L : vec2(1.0, 0.0);
+  vec2 nrm = vec2(-dir.y, dir.x);
+  float R = max(a_rad.x, a_rad.y) + 1.5 * u_texel;
+  vec2 wp = mix(p0 - dir * R, p1 + dir * R, a_corner.x) + nrm * (R * a_corner.y);
+  v_p = wp;
+  v_seg = a_seg;
+  v_rad = a_rad;
+  gl_Position = vec4((wp - u_rect.xy) / u_rect.zw, 0.0, 1.0);
+}`;
+
+const FS_SEG = `#version 300 es
+precision highp float;
+in vec2 v_p;
+flat in vec4 v_seg;
+flat in vec2 v_rad;
+uniform float u_texel;
+out vec4 o;
+void main() {
+  vec2 pa = v_p - v_seg.xy, ba = v_seg.zw - v_seg.xy;
+  float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-12), 0.0, 1.0);
+  float dist = length(pa - ba * h);
+  float r = mix(v_rad.x, v_rad.y, h);
+  float f = 0.5 * u_texel;
+  float cov = clamp((min(dist + f, r) - max(dist - f, -r)) / (2.0 * f), 0.0, 1.0);
+  o = vec4(1.0, 1.0, 1.0, 1.0 - 0.97 * cov);
+}`;
+
+const VS_FULL = `#version 300 es
+layout(location=0) in vec2 a_pos;
+out vec2 v_uv;
+void main() { v_uv = a_pos * 0.5 + 0.5; gl_Position = vec4(a_pos, 0.0, 1.0); }`;
+
+// The penumbra: gather a slice through the sun's disc, an ellipse on the wall, limb-darkened.
+const FS_BLUR = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform vec2 u_px;
+uniform vec3 u_taps[48];
+uniform int u_n;
+uniform float u_norm;
+out vec4 o;
+void main() {
+  vec3 acc = vec3(0.0);
+  for (int i = 0; i < 48; i++) {
+    if (i >= u_n) break;
+    vec3 k = u_taps[i];
+    vec4 m = texture(u_src, v_uv + k.xy * u_px);
+    acc += m.rgb * m.a * k.z;
+  }
+  o = vec4(acc * u_norm, 1.0);
+}`;
+
+function compositeSrc() {
+  let decl = '', body = '';
+  for (let i = 0; i < NL; i++) {
+    decl += `uniform sampler2D u_L${i};\n`;
+    body += `  t = slice(u_L${i}, v_uv * u_map[${i}].xy + u_map[${i}].zw, u_cubic[${i}]); T *= t;${i >= NL - 2 ? ' Tfar *= t;' : ''}\n`;
+  }
+  return `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 o;
+${decl}
+uniform vec4 u_map[${NL}];
+uniform float u_cubic[${NL}];
+uniform vec2 u_view;
+uniform vec3 u_sun;
+uniform vec3 u_amb;
+uniform float u_mono;
+
+vec4 bsW(float v) {
+  vec4 n = vec4(1.0, 2.0, 3.0, 4.0) - v;
+  vec4 s = n * n * n;
+  float x = s.x, y = s.y - 4.0 * s.x, z = s.z - 4.0 * s.y + 6.0 * s.x;
+  return vec4(x, y, z, 6.0 - x - y - z) * (1.0 / 6.0);
+}
+vec3 bicubic(sampler2D tex, vec2 uv) {
+  vec2 size = vec2(textureSize(tex, 0));
+  vec2 inv = 1.0 / size;
+  uv = uv * size - 0.5;
+  vec2 f = fract(uv);
+  uv -= f;
+  vec4 xc = bsW(f.x), yc = bsW(f.y);
+  vec4 c = uv.xxyy + vec2(-0.5, 1.5).xyxy;
+  vec4 s = vec4(xc.xz + xc.yw, yc.xz + yc.yw);
+  vec4 off = (c + vec4(xc.yw, yc.yw) / s) * inv.xxyy;
+  vec3 s0 = texture(tex, off.xz).rgb, s1 = texture(tex, off.yz).rgb;
+  vec3 s2 = texture(tex, off.xw).rgb, s3 = texture(tex, off.yw).rgb;
+  float sx = s.x / (s.x + s.y), sy = s.z / (s.z + s.w);
+  return mix(mix(s3, s2, sx), mix(s1, s0, sx), sy);
+}
+vec3 slice(sampler2D tex, vec2 uv, float cubic) {
+  return cubic > 0.5 ? bicubic(tex, uv) : texture(tex, uv).rgb;
+}
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x), mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+vec3 toSRGB(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+void main() {
+  vec3 T = vec3(1.0), Tfar = vec3(1.0), t;
+${body}
+  T = mix(T, vec3(dot(T, vec3(0.2126, 0.7152, 0.0722))), u_mono);
+  vec2 wp = (v_uv - 0.5) * u_view;
+  // matte plaster: fine grain, millimetre mottling, a slow unevenness across the wall
+  float grain = hash12(gl_FragCoord.xy) - 0.5;
+  float mottle = vnoise(wp * 320.0) - 0.5;
+  float sweep = vnoise(wp * 7.0 + 3.7) - 0.5;
+  float albedo = 1.0 + 0.012 * grain + 0.014 * mottle + 0.035 * sweep;
+  float relief = 1.0 + 0.035 * grain + 0.03 * mottle;   // raking sun picks out the texture
+  float farLum = dot(Tfar, vec3(0.2126, 0.7152, 0.0722));
+  vec3 lin = (u_sun * T * relief + u_amb * mix(1.0, farLum, 0.12)) * albedo;
+  vec2 q = (v_uv - 0.5) * 2.0 * u_view / max(u_view.x, u_view.y);
+  lin *= 1.0 - 0.06 * dot(q, q);
+  vec3 col = toSRGB(lin);
+  col += (hash12(gl_FragCoord.xy + 17.17) + hash12(gl_FragCoord.xy + 71.31) - 1.0) / 255.0;
+  o = vec4(col, 1.0);
+}`;
+}
+
+// ---------- WebGL plumbing ----------
+function compile(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+  return sh;
+}
+function program(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) {
+    const info = gl.getActiveUniform(p, i);
+    u[info.name.replace(/\[0\]$/, '')] = gl.getUniformLocation(p, info.name);
+  }
+  return { p, u };
+}
+const leafProg = program(VS_LEAF, FS_LEAF);
+const segProg = program(VS_SEG, FS_SEG);
+const blurProg = program(VS_FULL, FS_BLUR);
+const compProg = program(VS_FULL, compositeSrc());
+
+function vao(corners, inst) {
+  const v = gl.createVertexArray();
+  gl.bindVertexArray(v);
+  const b = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(corners), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  for (const i of inst) { gl.enableVertexAttribArray(i); gl.vertexAttribDivisor(i, 1); }
+  gl.bindVertexArray(null);
+  return v;
+}
+const leafVAO = vao([0, 0, 1, 0, 0, 1, 1, 1], [1, 2, 3, 4, 5, 6, 7]);
+const segVAO = vao([0, -1, 1, -1, 0, 1, 1, 1], [1, 2]);
+const fullVAO = vao([-1, -1, 3, -1, -1, 3], []);
+const buf = { segDyn: gl.createBuffer(), segStat: gl.createBuffer(), leafDyn: gl.createBuffer(), leafStat: gl.createBuffer(), flyDyn: gl.createBuffer(), flyStat: gl.createBuffer() };
+gl.bindBuffer(gl.ARRAY_BUFFER, buf.flyDyn); gl.bufferData(gl.ARRAY_BUFFER, flyDyn.byteLength, gl.DYNAMIC_DRAW);
+gl.bindBuffer(gl.ARRAY_BUFFER, buf.flyStat); gl.bufferData(gl.ARRAY_BUFFER, flyStat.byteLength, gl.DYNAMIC_DRAW);
+let segDyn = new Float32Array(0), leafDyn = new Float32Array(0);
+
+function pointSeg(first) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf.segDyn);
+  gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 16, first * 16);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf.segStat);
+  gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 8, first * 8);
+}
+function pointLeaf(first, dyn = buf.leafDyn, stat = buf.leafStat) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, dyn);
+  gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 32, first * 32);
+  gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, first * 32 + 8);
+  gl.vertexAttribPointer(3, 2, gl.FLOAT, false, 32, first * 32 + 16);
+  gl.vertexAttribPointer(6, 2, gl.FLOAT, false, 32, first * 32 + 24);
+  gl.bindBuffer(gl.ARRAY_BUFFER, stat);
+  gl.vertexAttribPointer(4, 4, gl.FLOAT, false, 32, first * 32);
+  gl.vertexAttribPointer(5, 2, gl.FLOAT, false, 32, first * 32 + 16);
+  gl.vertexAttribPointer(7, 2, gl.FLOAT, false, 32, first * 32 + 24);
+}
+
+function uploadScene() {
+  const segs = scene.segs, leaves = scene.leaves;
+  segDyn = new Float32Array(segs.length * 4);
+  const segStat = new Float32Array(segs.length * 2);
+  for (let i = 0; i < segs.length; i++) { const s = segs[i]; segStat[i * 2] = s.B.r[s.k]; segStat[i * 2 + 1] = s.B.r[s.k + 1]; }
+  leafDyn = new Float32Array(leaves.length * 8);
+  const leafStat = new Float32Array(leaves.length * 8);
+  for (let i = 0; i < leaves.length; i++) {
+    const L = leaves[i], o = i * 8;
+    leafStat[o] = L.pet; leafStat[o + 1] = L.sa; leafStat[o + 2] = L.sb; leafStat[o + 3] = L.bend;
+    leafStat[o + 4] = 0.0007; leafStat[o + 5] = L.op; leafStat[o + 6] = L.shape;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf.segDyn); gl.bufferData(gl.ARRAY_BUFFER, Math.max(16, segDyn.byteLength), gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf.segStat); gl.bufferData(gl.ARRAY_BUFFER, segStat, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf.leafDyn); gl.bufferData(gl.ARRAY_BUFFER, Math.max(32, leafDyn.byteLength), gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf.leafStat); gl.bufferData(gl.ARRAY_BUFFER, leafStat, gl.STATIC_DRAW);
+}
+
+function makeTarget(w, h, float) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  if (float) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (!ok && float) { gl.deleteFramebuffer(fb); gl.deleteTexture(tex); return makeTarget(w, h, false); }
+  return { tex, fb, w, h };
+}
+function freeTarget(t) { if (t) { gl.deleteFramebuffer(t.fb); gl.deleteTexture(t.tex); } }
+
+// Taps for one slice: a golden-angle spiral over the sun's disc, stretched along the light into an ellipse.
+function makeTaps(a, b) {
+  const n = Math.max(12, Math.min(48, Math.round(Math.PI * a * b * 0.6)));
+  const arr = new Float32Array(48 * 3);
+  const GA = Math.PI * (3 - Math.sqrt(5));
+  let sum = 0;
+  for (let k = 0; k < n; k++) {
+    const rho = Math.sqrt((k + 0.5) / n), th = k * GA;
+    const lx = rho * Math.cos(th) * a, ly = rho * Math.sin(th) * b;
+    arr[k * 3] = lx * DIR_X - ly * DIR_Y;
+    arr[k * 3 + 1] = lx * DIR_Y + ly * DIR_X;
+    const w = 1 - 0.6 * (1 - Math.sqrt(Math.max(0, 1 - rho * rho)));   // limb darkening
+    arr[k * 3 + 2] = w;
+    sum += w;
+  }
+  return { arr, n, norm: 1 / sum };
+}
+
+// ---------- sizing ----------
+const R0 = 4;                 // slices are resampled so the penumbra spans about this many texels
+const PIXEL_CAP = 2.6e6;
+const WALL_SCALE = 0.95;      // √(visible wall area), metres
+let quality = 1, cw = 1, ch = 1, wallW = 1.2, wallH = 0.75, cssW = 0, cssH = 0;
+const layers = LAYER_Z.map((z) => ({ z }));
+const mapArr = new Float32Array(NL * 4), cubicArr = new Float32Array(NL);
+
+function resize() {
+  cssW = Math.max(1, Math.round(viewW())); cssH = Math.max(1, Math.round(viewH()));
+  const dpr = Math.min(devicePixelRatio || 1, 2) * quality;
+  let w = Math.max(1, Math.round(cssW * dpr)), h = Math.max(1, Math.round(cssH * dpr));
+  if (w * h > PIXEL_CAP) { const k = Math.sqrt(PIXEL_CAP / (w * h)); w = Math.round(w * k); h = Math.round(h * k); }
+  cw = canvas.width = w; ch = canvas.height = h;
+  const ppm = Math.sqrt(cssW * cssH) / WALL_SCALE;
+  const ts = cssW / ppm / cw;                 // metres of wall per device pixel
+  wallW = cw * ts; wallH = ch * ts;
+  for (let i = 0; i < NL; i++) {
+    const L = layers[i];
+    const rPerp = L.z * SUN_R / COS_INC, rPar = rPerp / COS_INC;
+    let tx = Math.max(ts, rPerp / R0);
+    if (tx < ts * 1.2) tx = ts;
+    const full = tx === ts;
+    const m = Math.ceil(rPar / tx) + 3;
+    const lw = (full ? cw : Math.ceil(wallW / tx)) + 2 * m;
+    const lh = (full ? ch : Math.ceil(wallH / tx)) + 2 * m;
+    if (!L.mask || L.mask.w !== lw || L.mask.h !== lh) {
+      freeTarget(L.mask); freeTarget(L.blur);
+      L.mask = makeTarget(lw, lh, false);
+      L.blur = makeTarget(lw, lh, floatRT);
+    }
+    L.texel = tx; L.hw = lw * tx / 2; L.hh = lh * tx / 2;
+    L.taps = makeTaps(rPar / tx, rPerp / tx);
+    const sx = wallW / (2 * L.hw), sy = wallH / (2 * L.hh);
+    mapArr.set([sx, sy, 0.5 - 0.5 * sx, 0.5 - 0.5 * sy], i * 4);
+    cubicArr[i] = full ? 0 : 1;
+  }
+}
+
+// ---------- drawing ----------
+const LEAF_T = [0.06, 0.09, 0.025];   // a leaf lets a little green light through
+
+function drawSlices() {
+  gl.enable(gl.BLEND);
+  gl.blendEquationSeparate(gl.FUNC_ADD, gl.MIN);           // leaves multiply the light; wood covers like a stencil
+  gl.blendFuncSeparate(gl.DST_COLOR, gl.ZERO, gl.ONE, gl.ONE);
+  gl.clearColor(1, 1, 1, 1);
+  for (let i = 0; i < NL; i++) {
+    const L = layers[i];
+    const sr = scene.segRange[i], lr = scene.leafRange[i];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, L.mask.fb);
+    gl.viewport(0, 0, L.mask.w, L.mask.h);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    if (sr[1]) {
+      gl.useProgram(segProg.p);
+      gl.uniform4f(segProg.u.u_rect, 0, 0, L.hw, L.hh);
+      gl.uniform1f(segProg.u.u_texel, L.texel);
+      gl.bindVertexArray(segVAO);
+      pointSeg(sr[0]);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sr[1]);
+    }
+    if (lr[1]) {
+      gl.useProgram(leafProg.p);
+      gl.uniform4f(leafProg.u.u_rect, 0, 0, L.hw, L.hh);
+      gl.uniform1f(leafProg.u.u_texel, L.texel);
+      gl.uniform3fv(leafProg.u.u_leafT, LEAF_T);
+      gl.bindVertexArray(leafVAO);
+      pointLeaf(lr[0]);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, lr[1]);
+    }
+    const fr = flyRange[i];
+    if (fr[1]) {
+      gl.useProgram(leafProg.p);
+      gl.uniform4f(leafProg.u.u_rect, 0, 0, L.hw, L.hh);
+      gl.uniform1f(leafProg.u.u_texel, L.texel);
+      gl.uniform3fv(leafProg.u.u_leafT, LEAF_T);
+      gl.bindVertexArray(leafVAO);
+      pointLeaf(fr[0], buf.flyDyn, buf.flyStat);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, fr[1]);
+    }
+  }
+  gl.disable(gl.BLEND);
+  gl.useProgram(blurProg.p);
+  gl.bindVertexArray(fullVAO);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.uniform1i(blurProg.u.u_src, 0);
+  for (let i = 0; i < NL; i++) {
+    const L = layers[i];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, L.blur.fb);
+    gl.viewport(0, 0, L.blur.w, L.blur.h);
+    if (!scene.segRange[i][1] && !scene.leafRange[i][1] && !flyRange[i][1]) { gl.clear(gl.COLOR_BUFFER_BIT); continue; }
+    gl.bindTexture(gl.TEXTURE_2D, L.mask.tex);
+    gl.uniform2f(blurProg.u.u_px, 1 / L.mask.w, 1 / L.mask.h);
+    gl.uniform3fv(blurProg.u.u_taps, L.taps.arr);
+    gl.uniform1i(blurProg.u.u_n, L.taps.n);
+    gl.uniform1f(blurProg.u.u_norm, L.taps.norm);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+}
+
+// Linear light on the wall. Afternoon sun: warm sun, sky-blue fill in the shade. Black and white: a neutral print.
+const TONES = {
+  natural: { sun: [0.54, 0.5, 0.415], amb: [0.372, 0.392, 0.428], mono: 0 },
+  mono:    { sun: [0.473, 0.473, 0.473], amb: [0.423, 0.423, 0.423], mono: 1 },
+};
+let toneName = 'natural';
+const tone = { sun: TONES.natural.sun.slice(), amb: TONES.natural.amb.slice(), mono: 0 };
+const sunNow = [0, 0, 0], ambNow = [0, 0, 0];
+$('light').addEventListener('change', (e) => { toneName = e.target.value; });
+$('tree').addEventListener('change', (e) => { species = SPECIES[e.target.value]; flyers.length = 0; rebuild(); });
+
+function composite(dt) {
+  const k = 1 - Math.exp(-dt * 5), tg = TONES[toneName];
+  for (let i = 0; i < 3; i++) { tone.sun[i] += (tg.sun[i] - tone.sun[i]) * k; tone.amb[i] += (tg.amb[i] - tone.amb[i]) * k; }
+  tone.mono += (tg.mono - tone.mono) * k;
+  // shade depth trades skylight for sun, keeping the sunlit wall equally bright
+  const sh = P.shade, fill = sh <= 1 ? 1 + (1 - sh) * 0.9 : 1 - (sh - 1) * 0.5;
+  for (let i = 0; i < 3; i++) {
+    ambNow[i] = tone.amb[i] * fill;
+    sunNow[i] = Math.max(0, tone.sun[i] + tone.amb[i] - ambNow[i]);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, cw, ch);
+  gl.useProgram(compProg.p);
+  gl.bindVertexArray(fullVAO);
+  for (let i = 0; i < NL; i++) {
+    gl.activeTexture(gl.TEXTURE0 + i);
+    gl.bindTexture(gl.TEXTURE_2D, layers[i].blur.tex);
+    gl.uniform1i(compProg.u['u_L' + i], i);
+  }
+  gl.uniform4fv(compProg.u.u_map, mapArr);
+  gl.uniform1fv(compProg.u.u_cubic, cubicArr);
+  gl.uniform2f(compProg.u.u_view, wallW, wallH);
+  gl.uniform3fv(compProg.u.u_sun, sunNow);
+  gl.uniform3fv(compProg.u.u_amb, ambNow);
+  gl.uniform1f(compProg.u.u_mono, tone.mono);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.activeTexture(gl.TEXTURE0);
+}
+
+// ---------- tray: wind meter and controls ----------
+const tray = $('tray'), stat = $('stat'), gustNote = $('gustNote');
+if (smallScreen()) tray.open = false;   // on a phone the wall gets the whole screen
+const spark = $('spark'), sctx = spark.getContext('2d');
+const css = getComputedStyle(document.documentElement);
+const C_ACCENT = css.getPropertyValue('--accent').trim() || '#56694a';
+const C_GUST = css.getPropertyValue('--gust').trim() || '#a8742a';
+const C_LINE = css.getPropertyValue('--line').trim() || 'rgba(34,38,31,0.13)';
+const HIST_N = 480;                                  // 60 s at 8 samples a second
+const hist = new Float32Array(HIST_N), histGust = new Uint8Array(HIST_N);
+let histPos = 0, histAcc = 0, uiAcc = 0;
+const MS_PER_W = 7.2;                                // wind index → metres per second
+const BFT_EDGE = [0.5, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9];
+const BFT_NAME = ['calm', 'light air', 'light breeze', 'gentle breeze', 'moderate breeze', 'fresh breeze', 'strong breeze', 'near gale'];
+const isGusting = (W) => W > wind.base * 1.3 + 0.12;
+
+function drawSpark() {
+  const dpr = devicePixelRatio || 1;
+  const w = spark.clientWidth, h = spark.clientHeight;
+  if (!w || !h) return;
+  if (spark.width !== Math.round(w * dpr) || spark.height !== Math.round(h * dpr)) { spark.width = Math.round(w * dpr); spark.height = Math.round(h * dpr); }
+  const g = sctx;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const top = 3, bot = h - 1.5, maxW = 1.3;
+  const X = (i) => 1 + (i / (HIST_N - 1)) * (w - 6);
+  const Y = (v) => bot - Math.min(v / maxW, 1) * (bot - top);
+  // dashed guide where a breeze turns moderate (Beaufort 4)
+  const gy = Math.round(Y(5.5 / MS_PER_W)) + 0.5;
+  g.strokeStyle = C_LINE; g.lineWidth = 1; g.setLineDash([2, 3]);
+  g.beginPath(); g.moveTo(0, gy); g.lineTo(w, gy); g.stroke();
+  g.setLineDash([]);
+  g.beginPath();
+  for (let i = 0; i < HIST_N; i++) { const v = hist[(histPos + i) % HIST_N]; if (i) g.lineTo(X(i), Y(v)); else g.moveTo(X(i), Y(v)); }
+  g.lineTo(X(HIST_N - 1), bot); g.lineTo(X(0), bot); g.closePath();
+  g.globalAlpha = 0.12; g.fillStyle = C_ACCENT; g.fill(); g.globalAlpha = 1;
+  g.lineWidth = 1.4; g.lineJoin = 'round';
+  for (let pass = 0; pass < 2; pass++) {
+    g.strokeStyle = pass ? C_GUST : C_ACCENT;
+    g.beginPath();
+    let pen = false;
+    for (let i = 0; i < HIST_N; i++) {
+      const j = (histPos + i) % HIST_N;
+      if (pass && !histGust[j]) { pen = false; continue; }
+      if (pen) g.lineTo(X(i), Y(hist[j])); else { g.moveTo(X(i), Y(hist[j])); pen = true; }
+    }
+    g.stroke();
+  }
+  const lj = (histPos + HIST_N - 1) % HIST_N;
+  g.fillStyle = histGust[lj] ? C_GUST : C_ACCENT;
+  g.beginPath(); g.arc(X(HIST_N - 1), Y(hist[lj]), 2.6, 0, Math.PI * 2); g.fill();
+}
+
+function updateTray(t, dt) {
+  histAcc += dt; uiAcc += dt;
+  while (histAcc >= 0.125) {
+    histAcc -= 0.125;
+    const W = windAt(t, 0);
+    hist[histPos] = W; histGust[histPos] = isGusting(W) ? 1 : 0;
+    histPos = (histPos + 1) % HIST_N;
+  }
+  if (uiAcc < 0.25) return;
+  uiAcc = 0;
+  const W = windAt(t, 0), ms = W * MS_PER_W;
+  let f = 0;
+  while (f < BFT_EDGE.length && ms >= BFT_EDGE[f]) f++;
+  const gusting = isGusting(W);
+  stat.textContent = `Force ${f} · ${ms.toFixed(1)} m/s`;
+  gustNote.textContent = gusting ? 'gust' : BFT_NAME[f];
+  tray.classList.toggle('gusting', gusting);
+  if (tray.open) drawSpark();
+}
+
+let paused = false;
+const gustFrom = (x) => spawnGust(simT, rand(0.75, 1.05), x);
+canvas.addEventListener('pointerdown', (e) => { if (!paused) gustFrom((localX(e) / Math.max(1, cssW) - 0.5) * wallW); });
+$('gust').addEventListener('click', () => { if (!paused) gustFrom(-wallW * 0.6); });
+$('reseed').addEventListener('click', () => { seed = (Math.random() * 1e9) | 0; rebuild(); });
+$('pause').addEventListener('click', () => { paused = !paused; $('pause').textContent = paused ? 'Resume' : 'Pause'; });
+
+// ---------- sound of the tree ----------
+// A tree in a steady breeze is a soft, even "shhh": thousands of leaves brushing at once, so no
+// single leaf is heard. The body is pink noise shaped like foliage (no lows, rolled-off highs);
+// over it lies a faint texture of long, overlapping grains that keeps it from sounding like a
+// fan. Both follow how much the visible leaves are moving, a little smoothed.
+let audio = null, soundOn = true;
+function initAudio() {
+  const ctx = newAudioContext(), sr = ctx.sampleRate;
+  const master = ctx.createGain(), comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -18; comp.ratio.value = 2; comp.attack.value = 0.05; comp.release.value = 0.5;
+  master.gain.value = 1; master.connect(comp); comp.connect(ctx.destination);
+  const SECS = 9;
+  const pink = () => {
+    const len = (sr * SECS) | 0, buf = ctx.createBuffer(1, len, sr), d = buf.getChannelData(0);
+    let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+    for (let i = 0; i < len; i++) {
+      const w = Math.random() * 2 - 1;
+      b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.969 * b2 + w * 0.153852;
+      b3 = 0.8665 * b3 + w * 0.3104856; b4 = 0.55 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.016898;
+      d[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362) * 0.11; b6 = w * 0.115926;
+    }
+    return buf;
+  };
+  const grains = () => {   // long, soft, heavily overlapping grains: a gentle unevenness, not crackle
+    const len = (sr * SECS) | 0, buf = ctx.createBuffer(1, len, sr), d = buf.getChannelData(0);
+    for (let k = 0; k < 1000 * SECS; k++) {
+      const gl = (sr * (0.03 + Math.random() * 0.09)) | 0, at = (Math.random() * len) | 0, amp = 0.4 + Math.random() * 0.6;
+      for (let i = 0; i < gl; i++) d[(at + i) % len] += (Math.random() * 2 - 1) * amp * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / gl));
+    }
+    let rms = 0;
+    for (let i = 0; i < len; i++) rms += d[i] * d[i];
+    rms = Math.sqrt(rms / len) || 1;
+    for (let i = 0; i < len; i++) d[i] *= 0.25 / rms;
+    return buf;
+  };
+  const fadeLoop = (buf) => {   // crossfade the end into the start so the loop has no seam
+    const d = buf.getChannelData(0), f = (sr * 0.3) | 0, n = d.length;
+    for (let i = 0; i < f; i++) { const k = i / f; d[i] = d[i] * k + d[n - f + i] * (1 - k); }
+    return buf;
+  };
+  const filter = (type, f, q) => { const b = ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; return b; };
+  const layer = (buf, pan, hp, lp) => {
+    const n = ctx.createBufferSource(), h = filter('highpass', hp, 0.5), l = filter('lowpass', lp, 0.5), g = ctx.createGain(), p = ctx.createStereoPanner();
+    n.buffer = buf; n.loop = true; n.loopEnd = SECS - 0.3; g.gain.value = 0; p.pan.value = pan;
+    n.connect(h); h.connect(l); l.connect(g); g.connect(p); p.connect(master);
+    n.start(0, Math.random() * (SECS - 1));
+    return { g, l, lp };
+  };
+  const body = [layer(fadeLoop(pink()), -0.5, 350, 3000), layer(fadeLoop(pink()), 0.5, 350, 3000)];
+  const tex = [layer(fadeLoop(grains()), -0.3, 1200, 6500), layer(fadeLoop(grains()), 0.3, 1200, 6500)];
+  return { ctx, master, body, tex, m: 1 };
+}
+const soundLive = () => audio && soundOn && audio.ctx.state === 'running';
+// Hold a level for this frame only: if frames stop (a hidden tab), the sound fades out on its own.
+function hold(param, v, t, tc) { param.cancelScheduledValues(t); param.setTargetAtTime(v, t, tc); param.setTargetAtTime(0, t + 0.3, 0.2); }
+// m = how fast the visible leaves are turning, relative to a mild breeze (1): about 0.5 in weak air, 4 in a gust
+const MILD_TURN = 3.6;    // average leaf turning speed in a mild breeze (rad/s)
+function stepSound(dt) {
+  if (!audio) return;
+  const now = audio.ctx.currentTime;
+  const target = soundOn && !paused ? leafMotion / MILD_TURN : 0;
+  audio.m += (target - audio.m) * (1 - Math.exp(-dt / 0.5));
+  const m = audio.m, level = Math.pow(m, 0.35);   // even in a breeze; a gust is a few dB more
+  for (const L of audio.body) { hold(L.g.gain, 0.05 * level, now, 0.2); L.l.frequency.setTargetAtTime(L.lp * (0.7 + 0.3 * Math.min(1, m / 4)), now, 0.4); }
+  for (const L of audio.tex) hold(L.g.gain, 0.012 * level * Math.min(1.6, 0.6 + 0.2 * m), now, 0.2);
+}
+function startSound() {
+  if (!soundOn) return;
+  if (!audio) audio = initAudio();
+  if (audio.ctx.state !== 'running') audio.ctx.resume();
+}
+for (const ev of ['pointerdown', 'keydown', 'touchstart']) onPage(ev, startSound, { capture: true, passive: true });
+$('sound').addEventListener('click', () => {
+  soundOn = !soundOn;
+  if (soundOn) startSound();
+  $('sound').textContent = soundOn ? 'Mute sound' : 'Turn sound on';
+  $('sound').setAttribute('aria-pressed', String(soundOn));
+});
+
+// ---------- run ----------
+let scene = null, seed = (Math.random() * 1e9) | 0, simT = 0;
+
+function rebuild() {
+  scene = buildScene(seed);
+  uploadScene();
+  for (const B of scene.paths) B.W = wind.base;
+  for (let i = 0; i < 120; i++) { simT += 1 / 60; simulate(simT, 1 / 60); }   // let the branches settle into the breeze
+}
+
+resize();
+rebuild();
+hist.fill(wind.base);
+
+let resizeT = 0, slowFrames = 0;
+onPage('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { resize(); rebuild(); }, 150); });
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
+  last = now;
+  if (Math.round(viewW()) !== cssW || Math.round(viewH()) !== cssH) { resize(); rebuild(); }
+  const sdt = paused ? 0 : dt;
+  if (!paused) { simT += dt; simulate(simT, dt); }
+  fillInstances(simT, sdt);
+  stepFlyers(simT, sdt);
+  if (flyCount) { gl.bindBuffer(gl.ARRAY_BUFFER, buf.flyDyn); gl.bufferSubData(gl.ARRAY_BUFFER, 0, flyDyn); gl.bindBuffer(gl.ARRAY_BUFFER, buf.flyStat); gl.bufferSubData(gl.ARRAY_BUFFER, 0, flyStat); }
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf.segDyn); gl.bufferSubData(gl.ARRAY_BUFFER, 0, segDyn);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf.leafDyn); gl.bufferSubData(gl.ARRAY_BUFFER, 0, leafDyn);
+  drawSlices();
+  composite(dt);
+  if (!paused) updateTray(simT, dt);
+  stepSound(dt);
+  // keep the frame rate up on slower graphics by drawing fewer pixels
+  // (a hidden or throttled page ticks far slower than any real frame; ignore those)
+  if (dt > 0.026 && dt < 0.09) slowFrames++; else slowFrames = Math.max(0, slowFrames - 1);
+  if (slowFrames > 40 && quality > 0.5) { quality *= 0.85; slowFrames = 0; resize(); }
+  nextFrame(frame);
+}
+nextFrame((t) => { last = t; frame(t); });
+})();
+</script>
+</body>
+</html>
