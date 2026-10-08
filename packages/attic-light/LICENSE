@@ -1,0 +1,28 @@
+Attic Light (@akatori-design/attic-light)
+Copyright (c) 2026 Hiro · Akatori Design. All rights reserved.
+
+This software is proprietary. It is licensed, not sold.
+
+1. Licence. If Akatori Design has given you access to this package, you may install it and use
+   the unmodified package to display the Attic Light effect in websites and applications that
+   you or your organisation build and run.
+
+2. Restrictions. You may not, and may not allow anyone else to:
+   a. copy, modify, translate or create derivative works of the package's code, shaders or
+      styles, except as needed to install and run it;
+   b. decompile, de-minify, reverse engineer or attempt to recover its source code;
+   c. publish, redistribute, sell, sublicense, rent or share the package or its files,
+      including through another package registry, CDN or code repository;
+   d. remove, hide or alter the copyright notices, the credits comment, the credits property
+      or the credit line shown in the control tray.
+
+3. Ownership. Akatori Design keeps all rights, title and interest in the package. No rights are
+   granted except those stated above.
+
+4. Termination. This licence ends automatically if you break its terms. When it ends you must
+   stop using the package and delete every copy you have.
+
+5. No warranty. The package is provided "as is", without warranty of any kind. Akatori Design is
+   not liable for any claim, damage or other liability arising from its use.
+
+For licensing questions, contact Akatori Design through https://github.com/Akatori-Design.
