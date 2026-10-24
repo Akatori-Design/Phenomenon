@@ -34,6 +34,12 @@ air, glowing where the beam catches them and falling dark in shadow.
 
 [Source page](attic-light/index.html) · [How it works](attic-light/README.md) · [Installable package](packages/attic-light/)
 
+## Website
+
+The pieces are also on the web at https://akatori-design.github.io/Phenomenon/, each one full
+screen with its name lettered down the side; tap the name to move between them. The site lives in
+[site/](site/) and has its own [README](site/README.md).
+
 ---
 
 ## Running a project

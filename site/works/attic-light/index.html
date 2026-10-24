@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Attic Light</title>
+<style>
+/* Layout: one full-bleed WebGL stage, no overlay. */
+:root {
+  --bg: #090705;
+  --muted: #9a8670;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--bg); overflow: hidden; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+#c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+#c.down { cursor: grabbing; }
+.fallback { position: fixed; inset: 0; display: grid; place-items: center; padding-inline: 16px; text-align: center; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Sunbeam through an attic with floating dust. Move the pointer to stir the air."></canvas>
+
+<script>
+(() => {
+"use strict";
+// ---------- host ----------
+// Everything the effect needs from the page it runs in. The installable package swaps this block
+// for one scoped to a single <attic-light> element (packages/attic-light/build.mjs).
+const $ = (id) => document.getElementById(id);
+const viewW = () => innerWidth, viewH = () => innerHeight;
+const localX = (e) => e.clientX, localY = (e) => e.clientY;
+const onPage = (type, fn, opts) => addEventListener(type, fn, opts);
+const nextFrame = (fn) => requestAnimationFrame(fn);
+const smallScreen = () => Math.min(innerWidth, innerHeight) < 600;
+const onTeardown = () => {};   // the page never tears down
+const expose = () => {};       // the page has no outside controls
+// ---------- end host ----------
+const canvas = $('c');
+const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, premultipliedAlpha: false });
+if (!gl || !gl.getExtension('EXT_color_buffer_float')) {
+  const f = document.createElement('div'); f.className = 'fallback';
+  f.textContent = 'This simulation needs WebGL2 with float render targets, which this browser does not provide.';
+  canvas.parentNode.appendChild(f); return;
+}
+const floatOK = !!gl.getExtension('EXT_color_buffer_float');
+const ENC = floatOK ? 1.0 : 0.25;
+const isSmall = smallScreen() || navigator.hardwareConcurrency <= 4;
+
+/* ---------- scene geometry (metres, y up) ---------- */
+const v3 = {
+  sub: (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]],
+  dot: (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2],
+  cross: (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+  norm: a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; },
+};
+// Sun enters through a gap in the roof boards, top-left, and lands mid-floor.
+const O = [-3.6, 5.7, -2.6];
+const D = v3.norm([0.55, -0.75, 0.28]);
+const BU = v3.norm(v3.cross(D, [0, 1, 0]));
+const BV = v3.cross(BU, D);
+const tFloor = O[1] / -D[1];
+const PATCH = [O[0] + D[0]*tFloor, 0, O[2] + D[2]*tFloor];
+const SUN_C = [1.0, 0.80, 0.56];
+// Settings an embed can change; the defaults are the tuned look (sun 3.2, haze 1, every speck).
+const look = { sun: 3.2, haze: 1, dust: 1 };
+
+const CAM = [-1.99, 2.59, -0.04];
+const TARGET = [-1.45, 2.75, -1.75];
+const FOCUS = 1.9;
+
+/* ---------- shaders ---------- */
+const BEAM = `
+uniform vec3 uO, uD, uBU, uBV;
+float beam(vec3 p){
+  vec3 q = p - uO; float t = dot(q, uD);
+  if (t < 0.0) return 0.0;
+  vec3 pr = q - uD*t; float u = dot(pr, uBU), v = dot(pr, uBV);
+  float a = 0.8 + t*0.035, b = 0.38 + t*0.02, s = 0.04 + t*0.025;
+  float m = (1.0 - smoothstep(a-s, a+s, abs(u))) * (1.0 - smoothstep(b-s, b+s, abs(v)));
+  // shadows of roof boards across the opening, blurred by the sun's disc with distance
+  float sl = 0.5 + 0.5*cos(u*8.5 + 0.6);
+  sl = mix(1.0, 0.5 + 0.5*smoothstep(0.15, 0.85, sl), exp(-t*0.16));
+  return m * sl * smoothstep(0.0, 0.25, t);
+}
+float hg(float c, float g){ float d = 1.0 + g*g - 2.0*g*c; return (1.0 - g*g) / (d*sqrt(d)); }
+`;
+const NOISE = `
+float h3(vec3 p){ p = fract(p*0.3183099 + 0.1); p *= 17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
+float vn(vec3 x){
+  vec3 i = floor(x), f = fract(x); f = f*f*(3.0-2.0*f);
+  return mix(mix(mix(h3(i), h3(i+vec3(1,0,0)), f.x), mix(h3(i+vec3(0,1,0)), h3(i+vec3(1,1,0)), f.x), f.y),
+             mix(mix(h3(i+vec3(0,0,1)), h3(i+vec3(1,0,1)), f.x), mix(h3(i+vec3(0,1,1)), h3(i+vec3(1,1,1)), f.x), f.y), f.z);
+}
+float fbm(vec3 p){ return 0.55*vn(p) + 0.3*vn(p*2.03+7.1) + 0.15*vn(p*4.1+3.3); }
+`;
+const VS_FULL = `#version 300 es
+out vec2 vUv;
+void main(){ vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0); vUv = p*0.5+0.5; gl_Position = vec4(p, 0, 1); }`;
+
+const FS_SCENE = `#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 o;
+uniform vec3 uCam, uF, uR, uUp, uSun, uPatch;
+uniform float uTan, uAsp, uTime, uFrame, uEnc, uHaze;
+${BEAM}
+${NOISE}
+float ign(vec2 p){ return fract(52.9829189*fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+void main(){
+  vec2 n2 = vUv*2.0 - 1.0;
+  vec3 rd = normalize(uF + n2.x*uTan*uAsp*uR + n2.y*uTan*uUp);
+  float tH = 60.0; int mat = 0; vec3 nrm = vec3(0,1,0);
+  if (rd.y < 0.0) { float t = -uCam.y/rd.y; if (t < tH) { tH = t; mat = 1; nrm = vec3(0,1,0); } }
+  vec3 cp = vec3(0.25, 1.0, 0.0); float dn = dot(cp, rd);
+  if (dn > 0.0) { float t = (4.8 - dot(cp, uCam))/dn; if (t > 0.0 && t < tH) { tH = t; mat = 2; nrm = -normalize(cp); } }
+  if (rd.z < 0.0) { float t = (-3.8 - uCam.z)/rd.z; if (t < tH) { tH = t; mat = 3; nrm = vec3(0,0,1); } }
+  if (rd.x < 0.0) { float t = (-4.6 - uCam.x)/rd.x; if (t < tH) { tH = t; mat = 4; nrm = vec3(1,0,0); } }
+  if (rd.x > 0.0) { float t = (4.6 - uCam.x)/rd.x; if (t < tH) { tH = t; mat = 4; nrm = vec3(-1,0,0); } }
+  vec3 p = uCam + rd*tH;
+
+  vec3 alb = vec3(0.2); vec3 emit = vec3(0);
+  if (mat == 1) {            // loose-fill cellulose insulation
+    float f = fbm(p*vec3(5.0, 5.0, 5.0));
+    float fib = vn(p*vec3(38.0, 10.0, 31.0));
+    float clump = smoothstep(0.55, 0.9, vn(p*1.7));
+    alb = mix(vec3(0.20, 0.17, 0.14), vec3(0.46, 0.41, 0.35), f) * (0.65 + 0.6*fib) * (0.8 + 0.35*clump);
+    alb += vec3(0.5, 0.45, 0.4) * pow(vn(p*70.0), 14.0);
+  } else if (mat == 2) {     // roof boards and rafters
+    float r = fract(p.z*0.82 + 0.3);
+    float raft = smoothstep(0.0, 0.02, r) * (1.0 - smoothstep(0.15, 0.17, r));
+    float grain = vn(vec3(p.x*1.2, p.y*1.2, p.z*30.0));
+    float seam = smoothstep(0.0, 0.03, abs(fract(p.x*1.6) - 0.5));
+    vec3 board = vec3(0.24, 0.15, 0.09) * (0.7 + 0.5*grain) * (0.5 + 0.5*seam);
+    alb = mix(board, vec3(0.36, 0.24, 0.14)*(0.8+0.3*grain), raft);
+    vec3 q = p - uO; float u = dot(q, uBU), v = dot(q - uD*dot(q, uD), uBV);
+    float hole = (1.0 - smoothstep(0.6, 0.95, abs(u))) * (1.0 - smoothstep(0.22, 0.48, abs(v))) * step(length(q), 2.5);
+    emit = vec3(1.0, 0.94, 0.84) * 9.0 * hole;
+  } else {                   // gable and knee walls, rough planks
+    float g = vn(vec3(p.x*20.0, p.y*1.5, p.z*20.0));
+    float s = smoothstep(0.0, 0.04, abs(fract((p.x + p.z)*1.4) - 0.5));
+    alb = vec3(0.17, 0.12, 0.08) * (0.7 + 0.5*g) * (0.6 + 0.4*s);
+  }
+  vec3 Ld = -uD;
+  vec3 direct = uSun * beam(p + nrm*0.02) * max(dot(nrm, Ld), 0.0);
+  vec3 toP = uPatch - p; float dP = length(toP);
+  vec3 bounce = uSun * 0.16 * vec3(0.95, 0.85, 0.72) * max(dot(nrm, toP/max(dP, 1e-3)), 0.0) / (1.0 + dP*dP*0.45);
+  if (mat == 1) bounce *= 0.15;
+  vec3 col = alb*(direct + bounce + vec3(0.006, 0.005, 0.004)) + emit;
+
+  // single-scattering through the shaft, jittered ray march
+  float tMax = min(tH, 22.0); const int N = 44; float dt = tMax/float(N);
+  float j = ign(gl_FragCoord.xy + mod(uFrame, 64.0)*5.588);
+  float acc = 0.0;
+  vec3 drift = vec3(0.04, 0.03, 0.02)*uTime;
+  for (int i = 0; i < N; i++) {
+    vec3 s = uCam + rd*((float(i) + j)*dt);
+    float b = beam(s);
+    if (b > 0.002) acc += b * (0.45 + 0.9*fbm(s*0.85 + drift)) * dt;
+  }
+  float ph = hg(dot(uD, -rd), 0.55);
+  col += uSun * acc * ph * 0.055 * uHaze;
+  col += uSun * 0.001 * fbm(p*0.4) ;   // faint ambient haze
+
+  // veiling glare around the bright opening
+  float a = 1.0 - dot(rd, normalize(uO - uCam));
+  col += vec3(1.0, 0.86, 0.66) * (0.9*exp(-a*900.0) + 0.05*exp(-a*60.0));
+  o = vec4(col*uEnc, 1.0);
+}`;
+
+const VS_DUST = `#version 300 es
+precision highp float;
+uniform sampler2D uPosT, uAttrT; uniform int uTW;
+uniform mat4 uVP; uniform vec3 uCam;
+uniform float uPx, uFocus, uAp, uTime, uDpr, uSunI, uEnc, uMaxSize;
+${BEAM}
+out float vI; out float vS; out float vH;
+void main(){
+  ivec2 ij = ivec2(gl_VertexID % uTW, gl_VertexID / uTW);
+  vec4 aP = texelFetch(uPosT, ij, 0);   // xyz, resting flag
+  vec4 aA = texelFetch(uAttrT, ij, 0);  // diameter (um), seed, tau
+  if (aP.w > 1.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; vI = 0.0; vS = 1.0; vH = 0.0; return; }
+  vec3 p = aP.xyz;
+  gl_Position = uVP*vec4(p, 1.0);
+  float dist = length(p - uCam);
+  float coc = uAp*abs(dist - uFocus)/dist*uPx;
+  float base = 0.95*uDpr;
+  float size = min(sqrt(base*base + coc*coc), uMaxSize);
+  float b = beam(p); b *= b*b;
+  float ph = hg(dot(uD, normalize(uCam - p)), 0.55) * 0.55;
+  float seed = aA.y;
+  // flakes tumble: their scattering flashes as faces turn toward the camera
+  float tum = 0.3 + 1.1*pow(abs(sin(uTime*(0.5 + 2.2*seed) + seed*61.0)), 4.0);
+  float xs = clamp(aA.x*aA.x/81.0, 0.05, 6.0);          // scattering ~ cross-section
+  float E = (b*ph*uSunI*tum + 0.005) * xs;
+  if (aP.w > 0.5) E *= 0.35;
+  // light from one speck spreads over its blur disc; foreground discs get a little lift so they read
+  float near = 0.7;
+  float keep = mix(0.03, 1.0, smoothstep(0.6, 1.8, dist));   // thin the air right at the lens
+  vI = E * (base*base)/(size*size) * 1.6 * near * uEnc * smoothstep(0.35, 0.7, dist) * clamp((keep - seed)*12.0, 0.0, 1.0);
+  vS = size; vH = smoothstep(2.5*uDpr, 9.0*uDpr, coc);
+  gl_PointSize = size + 2.0;
+}`;
+const FS_UPDATE = `#version 300 es
+precision highp float;
+precision highp sampler3D;
+uniform sampler2D uPos, uVel, uTurb, uAttr;
+uniform sampler3D uAir;
+uniform vec3 uBMin, uBSize, uCE, uCR, uCU, uCF, uHandDir, uHandV;
+uniform vec2 uTanXY, uDepth;
+uniform float uDt, uFrame, uFocus, uHand, uRefill;
+layout(location=0) out vec4 oPos;
+layout(location=1) out vec4 oVel;
+layout(location=2) out vec4 oTurb;
+float hash(vec3 p){ p = fract(p*vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.x + p.y)*p.z); }
+vec3 g3(vec3 s){
+  return vec3(hash(s) + hash(s+1.7) + hash(s+3.1) - 1.5,
+              hash(s+5.3) + hash(s+7.9) + hash(s+9.4) - 1.5,
+              hash(s+11.2) + hash(s+13.6) + hash(s+15.8) - 1.5)*2.0;
+}
+bool inRoom(vec3 p){ return p.x > -3.95 && p.x < 3.95 && p.z > -3.45 && p.z < 2.45 && p.y > 0.02 && p.y < min(4.45, 4.8 - 0.25*p.x) - 0.05; }
+void main(){
+  ivec2 ij = ivec2(gl_FragCoord.xy);
+  vec4 P = texelFetch(uPos, ij, 0), V = texelFetch(uVel, ij, 0), T = texelFetch(uTurb, ij, 0), A = texelFetch(uAttr, ij, 0);
+  vec3 s = vec3(gl_FragCoord.xy, mod(uFrame, 997.0) + 0.5);
+  if (P.w > 1.5) {
+    // the room outside the frame is still dusty: drifting air brings specks back in through
+    // the edges and from deeper in the room, a few percent per second
+    if (hash(s + 31.0) < uDt*uRefill) {
+      float f = hash(s + 37.0), d0 = uDepth.x + 0.3, d1 = uDepth.y;
+      float d = pow(mix(d0*d0*d0, d1*d1*d1, hash(s + 41.0)), 1.0/3.0);
+      float lx = hash(s + 43.0)*2.0 - 1.0, ly = hash(s + 47.0)*2.0 - 1.0;
+      float side = hash(s + 53.0) < 0.5 ? -0.985 : 0.985;
+      if (f < 0.4) lx = side; else if (f < 0.65) ly = side; else d = d1*0.99;
+      vec3 np = uCE + uCF*d + uCR*lx*d*uTanXY.x + uCU*ly*d*uTanXY.y;
+      if (!inRoom(np)) { d = mix(d0, d1*0.6, hash(s + 59.0)); np = uCE + uCF*d + uCR*lx*d*uTanXY.x + uCU*ly*d*uTanXY.y; }
+      if (inRoom(np)) { P = vec4(np, 0.0); V = vec4(texture(uAir, (np - uBMin)/uBSize).xyz, 0.0); }
+    }
+    oPos = P; oVel = V; oTurb = T; return;
+  }
+  vec3 u = texture(uAir, (P.xyz - uBMin)/uBSize).xyz;
+  float sp = length(u);
+  if (P.w > 0.5) {
+    // re-entrainment: air shear at the floor has to beat adhesion
+    if (sp > 0.28 && hash(s) < (sp - 0.28)*uDt*10.0) { P.w = 0.0; P.y = 0.01; V.xyz = vec3(u.x, sp*(0.3 + 0.6*hash(s + 2.0)), u.z); }
+    oPos = P; oVel = V; oTurb = T; return;
+  }
+  // sub-grid eddies: Ornstein-Uhlenbeck velocity, stronger where the air is moving
+  float a = uDt/1.4, sig = 0.02 + 0.22*sp;
+  T.xyz += -T.xyz*a + sig*sqrt(2.0*a)*g3(s);
+  // Stokes drag toward the air + gravity, integrated exactly over the step
+  float tau = A.z, e = exp(-uDt/tau);
+  vec3 st = u + T.xyz + vec3(0.0, -9.81*tau, 0.0);
+  vec3 v = st + (V.xyz - st)*e;
+  vec3 p = P.xyz + v*uDt;
+  if (uHand > 0.0) {
+    vec3 q = p - uCE; float t = dot(q, uHandDir);
+    if (t > 0.05) {
+      float ang = length(q - uHandDir*t)/t;
+      // a swing bulldozes specks ahead of it and fans some deeper into the room
+      float w = exp(-ang*ang/(0.15*0.15))*uHand;
+      p += (uHandV*(t/uFocus)*1.25 + uHandDir*length(uHandV)*0.35)*w*uDt;
+    }
+  }
+  if (p.y <= 0.0) { p.y = 0.0; P.w = 1.0; v = vec3(0.0); }
+  float ym = min(4.45, 4.8 - 0.25*p.x) - 0.05;
+  if (p.y > ym) { p.y = ym; v.y = min(v.y, 0.0); }
+  if (p.x < -3.95) { p.x = -3.95; v.x = abs(v.x)*0.2; } else if (p.x > 3.95) { p.x = 3.95; v.x = -abs(v.x)*0.2; }
+  if (p.z < -3.45) { p.z = -3.45; v.z = abs(v.z)*0.2; } else if (p.z > 2.45) { p.z = 2.45; v.z = -abs(v.z)*0.2; }
+  if (P.w < 0.5) {
+    // dust carried out of the view volume joins the unseen air around it
+    vec3 q = p - uCE; float d = dot(q, uCF), dd = max(d, 1e-3);
+    float lx = dot(q, uCR)/(dd*uTanXY.x), ly = dot(q, uCU)/(dd*uTanXY.y);
+    if (d < uDepth.x || d > uDepth.y || abs(lx) > 1.0 || abs(ly) > 1.0) P.w = 2.0;
+  }
+  oPos = vec4(p, P.w); oVel = vec4(v, 0.0); oTurb = T;
+}`;
+const FS_DUST = `#version 300 es
+precision highp float;
+in float vI; in float vS; in float vH; out vec4 o;
+uniform vec3 uCol;
+void main(){
+  vec2 c = gl_PointCoord*2.0 - 1.0;
+  float r = length(c)*(vS + 2.0)/vS;
+  if (r > 1.1) discard;
+  float g = exp(-r*r*4.0)*1.4;
+  float disc = (1.0 - smoothstep(0.86, 1.0, r)) * (0.6 + 0.55*smoothstep(0.55, 0.95, r)) * 0.9;
+  o = vec4(uCol*vI*mix(g, disc, vH), 1.0);
+}`;
+
+const FS_TONE = `#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 o;
+uniform sampler2D uTex; uniform float uEnc, uTime;
+float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233)))*43758.5453); }
+void main(){
+  vec3 c = texture(uTex, vUv).rgb / uEnc;
+  c *= 1.05;
+  c = (c*(2.51*c + 0.03))/(c*(2.43*c + 0.59) + 0.14);
+  vec2 q = (vUv - 0.5)*vec2(1.15, 1.0);
+  c *= mix(0.5, 1.0, smoothstep(0.95, 0.2, length(q)));
+  c = pow(clamp(c, 0.0, 1.0), vec3(1.0/2.2));
+  c += (h(gl_FragCoord.xy + fract(uTime)*91.0) - 0.5)*0.028;
+  o = vec4(c, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function program(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const name = gl.getActiveUniform(p, i).name; u[name] = gl.getUniformLocation(p, name); }
+  return { p, u };
+}
+const pScene = program(VS_FULL, FS_SCENE);
+const pDust = program(VS_DUST, FS_DUST);
+const pUpdate = program(VS_FULL, FS_UPDATE);
+const pTone = program(VS_FULL, FS_TONE);
+const emptyVAO = gl.createVertexArray();
+
+/* ---------- framebuffer ---------- */
+let W = 0, Hh = 0, dpr = 1, fbo = null, fboTex = null, sizedW = 0, sizedH = 0;
+function resize() {
+  dpr = Math.min(devicePixelRatio || 1, 1.5);
+  const cssW = sizedW = viewW(), cssH = sizedH = viewH();
+  if (cssW * cssH * dpr * dpr > 2.6e6) dpr = Math.sqrt(2.6e6 / (cssW * cssH));
+  W = Math.max(1, Math.round(cssW * dpr)); Hh = Math.max(1, Math.round(cssH * dpr));
+  canvas.width = W; canvas.height = Hh;
+  if (fboTex) gl.deleteTexture(fboTex); if (fbo) gl.deleteFramebuffer(fbo);
+  fboTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, fboTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, floatOK ? gl.RGBA16F : gl.RGBA8, W, Hh, 0, gl.RGBA, floatOK ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+onPage('resize', resize); resize();
+
+/* ---------- camera ---------- */
+const cam = {};
+function updateCamera(time) {
+  const sway = [Math.sin(time*0.23)*0.015, Math.sin(time*0.31+1.0)*0.01, 0];
+  const e = [CAM[0]+sway[0], CAM[1]+sway[1], CAM[2]];
+  const F = v3.norm(v3.sub(TARGET, e)), R = v3.norm(v3.cross(F, [0,1,0])), U = v3.cross(R, F);
+  const asp = W / Hh;
+  const tan = Math.max(Math.tan(26 * Math.PI/180), 0.62 / asp);
+  const f = 1/tan, n = 0.05, fa = 60;
+  const P = [f/asp,0,0,0, 0,f,0,0, 0,0,(fa+n)/(n-fa),-1, 0,0,2*fa*n/(n-fa),0];
+  const V = [R[0],U[0],-F[0],0, R[1],U[1],-F[1],0, R[2],U[2],-F[2],0, -v3.dot(R,e),-v3.dot(U,e),v3.dot(F,e),1];
+  const M = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    let s = 0; for (let k = 0; k < 4; k++) s += P[k*4+r] * V[c*4+k]; M[c*4+r] = s;
+  }
+  Object.assign(cam, { e, F, R, U, asp, tan, VP: M });
+}
+function pointerRay(cx, cy) {
+  const nx = (cx / Math.max(1, viewW())) * 2 - 1, ny = 1 - (cy / Math.max(1, viewH())) * 2;
+  return v3.norm([
+    cam.F[0] + nx*cam.tan*cam.asp*cam.R[0] + ny*cam.tan*cam.U[0],
+    cam.F[1] + nx*cam.tan*cam.asp*cam.R[1] + ny*cam.tan*cam.U[1],
+    cam.F[2] + nx*cam.tan*cam.asp*cam.R[2] + ny*cam.tan*cam.U[2],
+  ]);
+}
+
+/* ---------- air: 3D stable-fluids grid (Stam), 25 cm cells ---------- */
+const NX = 32, NY = 18, NZ = 24, HC = 0.25, BX = -4, BY = 0, BZ = -3.5, NXY = NX*NY, NC = NXY*NZ;
+const Ua = new Float32Array(NC), Va = new Float32Array(NC), Wa = new Float32Array(NC);
+const U0 = new Float32Array(NC), V0 = new Float32Array(NC), W0 = new Float32Array(NC);
+const Pr = new Float32Array(NC), Dv = new Float32Array(NC), BUOY = new Float32Array(NC);
+const Cx = new Float32Array(NC), Cy = new Float32Array(NC), Cz = new Float32Array(NC), Cm = new Float32Array(NC);
+const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x-a)/(b-a))); return t*t*(3-2*t); };
+function beamJS(x, y, z) {
+  const qx = x-O[0], qy = y-O[1], qz = z-O[2], t = qx*D[0]+qy*D[1]+qz*D[2];
+  if (t < 0) return 0;
+  const px = qx-D[0]*t, py = qy-D[1]*t, pz = qz-D[2]*t;
+  const u = Math.abs(px*BU[0]+py*BU[1]+pz*BU[2]), v = Math.abs(px*BV[0]+py*BV[1]+pz*BV[2]);
+  const a = 0.8+t*0.035, b = 0.38+t*0.02, s = 0.04+t*0.025;
+  return (1-ss(a-s,a+s,u))*(1-ss(b-s,b+s,v));
+}
+for (let z = 0; z < NZ; z++) for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++) {
+  const cx = BX+(x+.5)*HC, cy = BY+(y+.5)*HC, cz = BZ+(z+.5)*HC;
+  const dx = cx-PATCH[0], dz = cz-PATCH[2];
+  // sun-warmed air in the shaft and above the lit patch of floor rises (buoyant accel, m/s^2)
+  BUOY[x+NX*(y+NY*z)] = 0.035*beamJS(cx,cy,cz) + 0.10*Math.exp(-(dx*dx+dz*dz)/0.9)*Math.exp(-cy/0.7);
+}
+
+function stepAir(dt, time) {
+  // body forces: buoyancy + slow large-scale room draughts
+  for (let z = 0, i = 0; z < NZ; z++) for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++, i++) {
+    const cx = x*HC, cy = y*HC, cz = z*HC;
+    Ua[i] += dt*0.024*Math.sin(0.7*cy + 0.9*cz + time*0.11);
+    Wa[i] += dt*0.014*Math.sin(0.6*cx + time*0.08 + 1.3);
+    Va[i] += dt*(BUOY[i] + 0.008*Math.sin(0.8*cx + 0.5*cz + time*0.13 + 2.0));
+  }
+  injectPointer(dt);
+  vorticity(dt);
+  advect(dt);
+  project();
+  const k = Math.exp(-dt*0.12);
+  for (let i = 0; i < NC; i++) { Ua[i] *= k; Va[i] *= k; Wa[i] *= k; }
+}
+function nb(x, y, z, i) {
+  return [x>0?i-1:i, x<NX-1?i+1:i, y>0?i-NX:i, y<NY-1?i+NX:i, z>0?i-NXY:i, z<NZ-1?i+NXY:i];
+}
+const NB = []; for (let z = 0, i = 0; z < NZ; z++) for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++, i++) NB.push(nb(x,y,z,i));
+function vorticity(dt) {
+  const inv = 1/(2*HC);
+  for (let i = 0; i < NC; i++) {
+    const n = NB[i];
+    const wx = (Wa[n[3]]-Wa[n[2]] - (Va[n[5]]-Va[n[4]]))*inv;
+    const wy = (Ua[n[5]]-Ua[n[4]] - (Wa[n[1]]-Wa[n[0]]))*inv;
+    const wz = (Va[n[1]]-Va[n[0]] - (Ua[n[3]]-Ua[n[2]]))*inv;
+    Cx[i] = wx; Cy[i] = wy; Cz[i] = wz; Cm[i] = Math.hypot(wx, wy, wz);
+  }
+  const eps = 0.9*HC;
+  for (let i = 0; i < NC; i++) {
+    const n = NB[i];
+    let gx = (Cm[n[1]]-Cm[n[0]]), gy = (Cm[n[3]]-Cm[n[2]]), gz = (Cm[n[5]]-Cm[n[4]]);
+    const l = Math.hypot(gx, gy, gz) + 1e-5; gx /= l; gy /= l; gz /= l;
+    Ua[i] += dt*eps*(gy*Cz[i] - gz*Cy[i]);
+    Va[i] += dt*eps*(gz*Cx[i] - gx*Cz[i]);
+    Wa[i] += dt*eps*(gx*Cy[i] - gy*Cx[i]);
+  }
+}
+function advect(dt) {
+  U0.set(Ua); V0.set(Va); W0.set(Wa);
+  const s = dt/HC;
+  for (let z = 0, i = 0; z < NZ; z++) for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++, i++) {
+    let fx = x - s*U0[i], fy = y - s*V0[i], fz = z - s*W0[i];
+    fx = fx < 0 ? 0 : fx > NX-1.001 ? NX-1.001 : fx;
+    fy = fy < 0 ? 0 : fy > NY-1.001 ? NY-1.001 : fy;
+    fz = fz < 0 ? 0 : fz > NZ-1.001 ? NZ-1.001 : fz;
+    const x0 = fx|0, y0 = fy|0, z0 = fz|0, tx = fx-x0, ty = fy-y0, tz = fz-z0;
+    const a = x0+NX*(y0+NY*z0), b = a+1, c = a+NX, d = c+1, e = a+NXY, f = e+1, g = e+NX, h = g+1;
+    const w0 = (1-tx)*(1-ty)*(1-tz), w1 = tx*(1-ty)*(1-tz), w2 = (1-tx)*ty*(1-tz), w3 = tx*ty*(1-tz);
+    const w4 = (1-tx)*(1-ty)*tz, w5 = tx*(1-ty)*tz, w6 = (1-tx)*ty*tz, w7 = tx*ty*tz;
+    Ua[i] = U0[a]*w0+U0[b]*w1+U0[c]*w2+U0[d]*w3+U0[e]*w4+U0[f]*w5+U0[g]*w6+U0[h]*w7;
+    Va[i] = V0[a]*w0+V0[b]*w1+V0[c]*w2+V0[d]*w3+V0[e]*w4+V0[f]*w5+V0[g]*w6+V0[h]*w7;
+    Wa[i] = W0[a]*w0+W0[b]*w1+W0[c]*w2+W0[d]*w3+W0[e]*w4+W0[f]*w5+W0[g]*w6+W0[h]*w7;
+  }
+}
+function project() {
+  for (let z = 0, i = 0; z < NZ; z++) for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++, i++) {
+    if (x === 0 || x === NX-1) Ua[i] = 0;
+    if (y === 0 || y === NY-1) Va[i] = 0;
+    if (z === 0 || z === NZ-1) Wa[i] = 0;
+  }
+  for (let i = 0; i < NC; i++) {
+    const n = NB[i];
+    Dv[i] = -0.5*HC*(Ua[n[1]]-Ua[n[0]] + Va[n[3]]-Va[n[2]] + Wa[n[5]]-Wa[n[4]]);
+    Pr[i] = 0;
+  }
+  for (let it = 0; it < 16; it++) {
+    for (let i = 0; i < NC; i++) {
+      const n = NB[i]; let s = 0, c = 0;
+      for (let k = 0; k < 6; k++) if (n[k] !== i) { s += Pr[n[k]]; c++; }
+      Pr[i] = (Dv[i] + s)/c;
+    }
+  }
+  const inv = 0.5/HC;
+  for (let i = 0; i < NC; i++) {
+    const n = NB[i];
+    Ua[i] -= inv*(Pr[n[1]]-Pr[n[0]]);
+    Va[i] -= inv*(Pr[n[3]]-Pr[n[2]]);
+    Wa[i] -= inv*(Pr[n[5]]-Pr[n[4]]);
+  }
+}
+const airAt = [0,0,0];
+function sampleAir(px, py, pz, out) {
+  let fx = (px-BX)/HC-0.5, fy = (py-BY)/HC-0.5, fz = (pz-BZ)/HC-0.5;
+  fx = fx < 0 ? 0 : fx > NX-1.001 ? NX-1.001 : fx;
+  fy = fy < 0 ? 0 : fy > NY-1.001 ? NY-1.001 : fy;
+  fz = fz < 0 ? 0 : fz > NZ-1.001 ? NZ-1.001 : fz;
+  const x0 = fx|0, y0 = fy|0, z0 = fz|0, tx = fx-x0, ty = fy-y0, tz = fz-z0;
+  const a = x0+NX*(y0+NY*z0), b = a+1, c = a+NX, d = c+1, e = a+NXY, f = e+1, g = e+NX, h = g+1;
+  const w0 = (1-tx)*(1-ty)*(1-tz), w1 = tx*(1-ty)*(1-tz), w2 = (1-tx)*ty*(1-tz), w3 = tx*ty*(1-tz);
+  const w4 = (1-tx)*(1-ty)*tz, w5 = tx*(1-ty)*tz, w6 = (1-tx)*ty*tz, w7 = tx*ty*tz;
+  out[0] = Ua[a]*w0+Ua[b]*w1+Ua[c]*w2+Ua[d]*w3+Ua[e]*w4+Ua[f]*w5+Ua[g]*w6+Ua[h]*w7;
+  out[1] = Va[a]*w0+Va[b]*w1+Va[c]*w2+Va[d]*w3+Va[e]*w4+Va[f]*w5+Va[g]*w6+Va[h]*w7;
+  out[2] = Wa[a]*w0+Wa[b]*w1+Wa[c]*w2+Wa[d]*w3+Wa[e]*w4+Wa[f]*w5+Wa[g]*w6+Wa[h]*w7;
+}
+
+/* ---------- pointer → air ---------- */
+const ptr = { in: false, down: false, cx: 0, cy: 0, P: null, vel: [0,0,0], puff: false, dir: [0,0,-1] };
+function onMove(e) { ptr.in = true; ptr.cx = localX(e); ptr.cy = localY(e); }
+canvas.addEventListener('pointermove', onMove);
+canvas.addEventListener('pointerdown', e => {
+  onMove(e); ptr.down = true; ptr.puff = true; ptr.P = null;
+  canvas.classList.add('down');
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+});
+const up = () => { ptr.down = false; canvas.classList.remove('down'); };
+canvas.addEventListener('pointerup', up);
+canvas.addEventListener('pointercancel', () => { up(); ptr.in = false; });
+canvas.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') { ptr.in = false; ptr.P = null; } });
+
+function updatePointer(dt) {
+  if (!ptr.in) { ptr.vel = [0,0,0]; return; }
+  const dir = pointerRay(ptr.cx, ptr.cy);
+  const P = [cam.e[0]+dir[0]*FOCUS, cam.e[1]+dir[1]*FOCUS, cam.e[2]+dir[2]*FOCUS];
+  if (ptr.P) {
+    const k = 0.45, mx = 7;
+    for (let a = 0; a < 3; a++) {
+      const v = Math.max(-mx, Math.min(mx, (P[a]-ptr.P[a])/dt));
+      ptr.vel[a] += (v - ptr.vel[a])*k;
+    }
+  }
+  ptr.P = P; ptr.dir = dir;
+}
+function injectPointer(dt) {
+  if (!ptr.in || !ptr.P) return;
+  const e = cam.e, dir = ptr.dir, mv = ptr.vel;
+  const strong = ptr.down;
+  const sp = Math.hypot(mv[0], mv[1], mv[2]);
+  if (ptr.puff) {
+    // pressing is a quick flap of the hand: a radial burst of air at the pointer
+    ptr.puff = false;
+    for (let z = 0, i = 0; z < NZ; z++) for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++, i++) {
+      const rx = BX+(x+.5)*HC-ptr.P[0], ry = BY+(y+.5)*HC-ptr.P[1], rz = BZ+(z+.5)*HC-ptr.P[2];
+      const d = Math.hypot(rx, ry, rz); if (d > 2.0) continue;
+      const w = 1.6*Math.exp(-d*d/(2*0.55*0.55))/(d+0.15);
+      Ua[i] += w*rx; Va[i] += w*ry; Wa[i] += w*rz;
+    }
+  }
+  if (sp < 0.03) return;
+  // a hand sweeping through air drags the air along a slab around the pointer ray
+  const sig = strong ? 0.6 : 0.32, sigT = strong ? 2.4 : 1.5;
+  const rate = dt*(strong ? 3.4 : 0.8);
+  const lim2 = 9*sig*sig, i2s = 1/(2*sig*sig), i2t = 1/(2*sigT*sigT);
+  for (let z = 0, i = 0; z < NZ; z++) for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++, i++) {
+    const dx = BX+(x+.5)*HC-e[0], dy = BY+(y+.5)*HC-e[1], dz = BZ+(z+.5)*HC-e[2];
+    const t = dx*dir[0]+dy*dir[1]+dz*dir[2]; if (t < 0) continue;
+    const px = dx-dir[0]*t, py = dy-dir[1]*t, pz = dz-dir[2]*t, r2 = px*px+py*py+pz*pz;
+    if (r2 > lim2) continue;
+    const w = Math.exp(-r2*i2s - (t-FOCUS)*(t-FOCUS)*i2t)*rate;
+    Ua[i] += w*mv[0]; Va[i] += w*mv[1]; Wa[i] += w*mv[2];
+    const s2 = Ua[i]*Ua[i] + Va[i]*Va[i] + Wa[i]*Wa[i];
+    if (s2 > 6.25) { const k = 2.5/Math.sqrt(s2); Ua[i] *= k; Va[i] *= k; Wa[i] *= k; }
+    if (strong) {
+      const j = w*sp*2.0;
+      Ua[i] += j*(Math.random()-0.5); Va[i] += j*(Math.random()-0.5); Wa[i] += j*(Math.random()-0.5);
+    }
+  }
+}
+
+/* ---------- dust: Stokes drag + gravity on the GPU, state in float textures ---------- */
+updateCamera(0);
+const TW = 512, TH = isSmall ? 192 : 512, NP = TW*TH;
+const G = 9.81, MU = 1.81e-5, RHO = 1150;
+const DEPTH = [0.12, 4.4];
+const gr = () => (Math.random()+Math.random()+Math.random()-1.5)*2;
+const yMax = x => Math.min(4.45, 4.8 - 0.25*x) - 0.05;
+const inRoom = (x, y, z) => x > -3.95 && x < 3.95 && z > -3.45 && z < 2.45 && y > 0.02 && y < yMax(x);
+
+function makeTex(data) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, TW, TH, 0, gl.RGBA, gl.FLOAT, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  return t;
+}
+const state = [0, 1].map(() => {
+  const s = { pos: makeTex(null), vel: makeTex(null), turb: makeTex(null), fb: gl.createFramebuffer() };
+  gl.bindFramebuffer(gl.FRAMEBUFFER, s.fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, s.pos, 0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, s.vel, 0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, s.turb, 0);
+  return s;
+});
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+const attrTex = makeTex(null);
+let cur = 0;
+const activeRows = () => Math.max(1, Math.round(TH * look.dust));
+
+function resetDust() {
+  const P = new Float32Array(NP*4), Vz = new Float32Array(NP*4), T = new Float32Array(NP*4), A = new Float32Array(NP*4);
+  const tx = cam.tan*cam.asp, ty = cam.tan, d0 = DEPTH[0]**3, d1 = DEPTH[1]**3;
+  for (let k = 0; k < NP; k++) {
+    const d = Math.min(90, Math.max(3, Math.exp(Math.log(9) + 0.55*gr()))), dm = d*1e-6;
+    A[k*4] = d; A[k*4+1] = Math.random(); A[k*4+2] = RHO*dm*dm/(18*MU);
+    // uniform density through the visible volume (depth ~ cube root), kept inside the room
+    let x = 0, y = 2, z = 0;
+    for (let tries = 0; tries < 24; tries++) {
+      const dd = Math.cbrt(d0 + Math.random()*(d1 - d0)), lx = (Math.random()*2-1)*dd*tx, ly = (Math.random()*2-1)*dd*ty;
+      x = cam.e[0] + cam.F[0]*dd + cam.R[0]*lx + cam.U[0]*ly;
+      y = cam.e[1] + cam.F[1]*dd + cam.R[1]*lx + cam.U[1]*ly;
+      z = cam.e[2] + cam.F[2]*dd + cam.R[2]*lx + cam.U[2]*ly;
+      if (inRoom(x, y, z)) break;
+    }
+    P[k*4] = x; P[k*4+1] = y; P[k*4+2] = z;
+    T[k*4] = gr()*0.01; T[k*4+1] = gr()*0.01; T[k*4+2] = gr()*0.01;
+  }
+  for (const [tex, data] of [[state[0].pos, P], [state[0].vel, Vz], [state[0].turb, T], [state[1].pos, P], [state[1].vel, Vz], [state[1].turb, T], [attrTex, A]]) {
+    gl.bindTexture(gl.TEXTURE_2D, tex); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TW, TH, gl.RGBA, gl.FLOAT, data);
+  }
+  Ua.fill(0); Va.fill(0); Wa.fill(0);
+}
+
+// air velocity grid mirrored into a 3D texture each frame
+const airTex = gl.createTexture(), airData = new Float32Array(NC*4);
+gl.bindTexture(gl.TEXTURE_3D, airTex);
+gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, NX, NY, NZ, 0, gl.RGBA, gl.FLOAT, null);
+for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_3D, k, v);
+function uploadAir() {
+  for (let i = 0; i < NC; i++) { airData[i*4] = Ua[i]; airData[i*4+1] = Va[i]; airData[i*4+2] = Wa[i]; }
+  gl.bindTexture(gl.TEXTURE_3D, airTex);
+  gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, NX, NY, NZ, gl.RGBA, gl.FLOAT, airData);
+}
+
+function stepDust(dt, frame) {
+  uploadAir();
+  const src = state[cur], dst = state[1 - cur];
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2]);
+  gl.viewport(0, 0, TW, activeRows()); gl.disable(gl.BLEND);
+  gl.useProgram(pUpdate.p); const u = pUpdate.u;
+  [[src.pos, 'uPos'], [src.vel, 'uVel'], [src.turb, 'uTurb'], [attrTex, 'uAttr']].forEach(([t, n], i) => {
+    gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(u[n], i);
+  });
+  gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_3D, airTex); gl.uniform1i(u.uAir, 4);
+  gl.uniform3f(u.uBMin, BX, BY, BZ); gl.uniform3f(u.uBSize, NX*HC, NY*HC, NZ*HC);
+  gl.uniform3fv(u.uCE, cam.e); gl.uniform3fv(u.uCR, cam.R); gl.uniform3fv(u.uCU, cam.U); gl.uniform3fv(u.uCF, cam.F);
+  gl.uniform2f(u.uTanXY, cam.tan*cam.asp*1.04, cam.tan*1.04); gl.uniform2f(u.uDepth, DEPTH[0], DEPTH[1]);
+  gl.uniform1f(u.uDt, dt); gl.uniform1f(u.uFrame, frame); gl.uniform1f(u.uFocus, FOCUS); gl.uniform1f(u.uRefill, 0.035);
+  gl.uniform3fv(u.uHandDir, ptr.dir); gl.uniform3fv(u.uHandV, ptr.vel); gl.uniform1f(u.uHand, ptr.down && ptr.in && ptr.P ? 1 : 0);
+  gl.bindVertexArray(emptyVAO); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  cur = 1 - cur;
+}
+resetDust();
+const maxPt = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1];
+
+function setBeam(u) {
+  gl.uniform3fv(u.uO, O); gl.uniform3fv(u.uD, D); gl.uniform3fv(u.uBU, BU); gl.uniform3fv(u.uBV, BV);
+}
+function render(time, frame) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.viewport(0, 0, W, Hh);
+  gl.disable(gl.BLEND);
+  gl.useProgram(pScene.p); const s = pScene.u;
+  gl.uniform3fv(s.uCam, cam.e); gl.uniform3fv(s.uF, cam.F); gl.uniform3fv(s.uR, cam.R); gl.uniform3fv(s.uUp, cam.U);
+  gl.uniform3f(s.uSun, SUN_C[0]*look.sun, SUN_C[1]*look.sun, SUN_C[2]*look.sun); gl.uniform3fv(s.uPatch, PATCH);
+  gl.uniform1f(s.uTan, cam.tan); gl.uniform1f(s.uAsp, cam.asp); gl.uniform1f(s.uTime, time);
+  gl.uniform1f(s.uFrame, frame); gl.uniform1f(s.uEnc, ENC); gl.uniform1f(s.uHaze, look.haze); setBeam(s);
+  gl.bindVertexArray(emptyVAO); gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+  gl.useProgram(pDust.p); const d = pDust.u;
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, state[cur].pos); gl.uniform1i(d.uPosT, 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, attrTex); gl.uniform1i(d.uAttrT, 1);
+  gl.uniform1i(d.uTW, TW);
+  gl.uniformMatrix4fv(d.uVP, false, cam.VP); gl.uniform3fv(d.uCam, cam.e);
+  gl.uniform1f(d.uPx, Hh/(2*cam.tan)); gl.uniform1f(d.uFocus, FOCUS); gl.uniform1f(d.uAp, 0.0115);
+  gl.uniform1f(d.uTime, time); gl.uniform1f(d.uDpr, dpr); gl.uniform1f(d.uSunI, look.sun); gl.uniform1f(d.uEnc, ENC);
+  gl.uniform1f(d.uMaxSize, Math.min(maxPt - 2, 120*dpr)); gl.uniform3fv(d.uCol, SUN_C); setBeam(d);
+  gl.bindVertexArray(emptyVAO);
+  gl.drawArrays(gl.POINTS, 0, TW*activeRows());
+
+  gl.disable(gl.BLEND);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, W, Hh);
+  gl.useProgram(pTone.p);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, fboTex);
+  gl.uniform1i(pTone.u.uTex, 0); gl.uniform1f(pTone.u.uEnc, ENC); gl.uniform1f(pTone.u.uTime, time);
+  gl.bindVertexArray(emptyVAO); gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+/* ---------- loop ---------- */
+let paused = false;
+let last = performance.now(), simTime = 0, frame = 0;
+function loop(now) {
+  const dt = Math.min(1/30, Math.max(1/240, (now - last)/1000)); last = now;
+  if (!paused) simTime += dt;
+  if (viewW() !== sizedW || viewH() !== sizedH) resize();
+  updateCamera(simTime);
+  updatePointer(dt);
+  if (!paused) { stepAir(dt, simTime); stepDust(dt, frame); }
+  render(simTime, frame++);
+  nextFrame(loop);
+}
+nextFrame(loop);
+// An embed sets these from its attributes: level is 0-1 with 0.5 as the tuned look; dust is the share of specks.
+const fromLevel = (base, v) => base * (v <= 0.5 ? v * 2 : 1 + (v - 0.5) * 2);
+expose({
+  sunlight: (v) => { look.sun = fromLevel(3.2, v); },
+  haze: (v) => { look.haze = fromLevel(1, v); },
+  dust: (v) => { look.dust = Math.min(1, Math.max(0, v)); },
+  paused: (on) => { paused = !!on; },
+  reset: resetDust,
+});
+})();
+</script>
+<script src="../../assets/side.js?v=4" data-current="attic-light" data-theme="dark"></script>
+</body>
+</html>

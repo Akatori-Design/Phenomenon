@@ -1,0 +1,2398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rain on Glass</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap">
+<style>
+[hidden] { display: none !important; }
+:root {
+  /* Full-bleed WebGL window pane; one frosted control tray floats in the corner like a sticker on the glass */
+  --night: #07090d;
+  --ink: #e6ebf3;
+  --dim: #8d97aa;
+  --tray: rgba(12, 15, 22, 0.58);
+  --line: rgba(220, 232, 255, 0.14);
+  --accent: #a9ccff;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { margin: 0; background: var(--night); color: var(--ink); overflow: hidden; font-family: var(--mono); }
+#glass { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: default; }
+
+.tray {
+  position: fixed; left: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  width: min(290px, calc(100vw - 32px));
+  background: var(--tray); border: 1px solid var(--line); border-radius: 10px;
+  -webkit-backdrop-filter: blur(16px) saturate(1.2); backdrop-filter: blur(16px) saturate(1.2);
+  font-size: 12px; line-height: 1.4;
+}
+.tray summary {
+  list-style: none; cursor: pointer; padding: 10px 12px;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+}
+.tray summary::-webkit-details-marker { display: none; }
+.tray summary::before { content: "+"; color: var(--dim); width: 10px; }
+.tray[open] summary::before { content: "−"; }
+.stat { margin-left: auto; color: var(--dim); letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
+.rows { padding: 2px 12px 12px; display: grid; gap: 10px; }
+.row { display: grid; gap: 3px; }
+.row label { display: flex; justify-content: space-between; color: var(--dim); }
+.row output { color: var(--ink); font-variant-numeric: tabular-nums; }
+select { font: inherit; color: var(--ink); background: rgba(255, 255, 255, 0.06); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+select option { background: var(--night); }
+input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
+.btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.btns button, .btns .file {
+  font: inherit; color: var(--ink); background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer;
+}
+.btns button:hover, .btns .file:hover { background: rgba(255, 255, 255, 0.13); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.note { margin: 0; color: var(--dim); }
+#nogl[hidden] { display: none; }
+#nogl { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; color: var(--dim); }
+/* on the Phenomenon site the piece shows only its name (assets/side.js), at the default settings */
+#tray { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="glass" aria-label="Rain running down a window at night"></canvas>
+<div id="nogl" hidden>This effect needs WebGL 2. Try a current version of Chrome, Safari, Firefox or Edge.</div>
+
+<details class="tray" id="tray" open>
+  <summary>Window <span class="stat" id="stat">0 drops</span></summary>
+  <div class="rows">
+    <div class="row"><label for="rain">Rainfall <output id="rainOut"></output></label><input type="range" id="rain" min="0" max="1" step="0.01"></div>
+    <div class="row"><label for="mist">Condensation <output id="mistOut"></output></label><input type="range" id="mist" min="0" max="1" step="0.01"></div>
+    <div class="row"><label for="refract">Refraction <output id="refractOut"></output></label><input type="range" id="refract" min="0" max="1" step="0.01"></div>
+    <div class="row"><label for="fog">Fog <output id="fogOut"></output></label><input type="range" id="fog" min="0" max="1" step="0.01"></div>
+    <div class="row"><label for="humid">Humidity <output id="humidOut"></output></label><input type="range" id="humid" min="0" max="1" step="0.01"></div>
+    <div class="row"><label for="scene">View outside</label>
+      <select id="scene"><option value="video" data-src="street.mp4" selected>Rainy street</option><option value="dusk">Dusk street</option><option value="night">Night city</option></select></div>
+    <div class="btns">
+      <button id="wipe" type="button">Wipe glass</button>
+      <button id="pause" type="button">Pause</button>
+      <button id="sound" type="button" aria-pressed="true">Mute sound</button>
+      <label class="file" for="photo">Use a photo or video</label>
+      <input class="sr" type="file" id="photo" accept="image/*,video/*">
+    </div>
+    <p class="note">Drag across the glass to wipe it, as if with three fingers (a thumb on a phone). Above 80% rainfall, streams start running down the pane. Drop a photo or video anywhere to look through it.</p>
+  </div>
+</details>
+
+<script>
+(() => {
+// ---------- host ----------
+// Everything the effect needs from the page it runs in. The installable package swaps this block
+// for one scoped to a single <rain-on-glass> element (packages/rain-on-glass/build.mjs).
+const $ = (id) => document.getElementById(id);
+const viewW = () => innerWidth, viewH = () => innerHeight;
+const localX = (e) => e.clientX, localY = (e) => e.clientY;
+const onPage = (type, fn, opts) => addEventListener(type, fn, opts);
+const nextFrame = (fn) => requestAnimationFrame(fn);
+const newAudioContext = () => new (window.AudioContext || window.webkitAudioContext)();
+const onTeardown = () => {};   // the page never tears down
+// ---------- end host ----------
+const canvas = $('glass');
+const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, powerPreference: 'high-performance' });
+if (!gl) { $('nogl').hidden = false; $('tray').hidden = true; return; }
+let hasFloat = !!gl.getExtension('EXT_color_buffer_float');
+
+// ---------- settings ----------
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+// Each slider's midpoint is the tuned look; either half of the track scales from there to 0 or 1.
+const MID = { rain: 0.7, mist: 0.83, refract: 0.7, fog: 0.87, humid: 0.5 };
+const fromSlider = (k, v) => (v <= 0.5 ? MID[k] * v * 2 : MID[k] + (1 - MID[k]) * (v - 0.5) * 2);
+// Rainfall's lower half is gentler: 50% on the track is a light shower, and the upper half climbs to the same downpour.
+const rainCurve = (v) => (v <= 0.5 ? v * 0.5 : 0.25 + (v - 0.5) * 1.5);
+// Where the sliders start: a steady rain on a clear pane, no condensation, softer refraction.
+const START = { rain: 0.65, mist: 0, refract: 0.43, fog: 0.5, humid: 0.5 };
+const P = {}, SL = {};   // P: values the simulation uses; SL: slider positions (0–1), with rainfall run through rainCurve
+for (const k of Object.keys(MID)) {
+  const el = $(k), out = $(k + 'Out');
+  el.value = k === 'rain' && reduced ? 0.3 : START[k];
+  const upd = () => { SL[k] = k === 'rain' ? rainCurve(+el.value) : +el.value; P[k] = fromSlider(k, SL[k]); out.textContent = Math.round(+el.value * 100) + '%'; };
+  el.addEventListener('input', upd); upd();
+}
+if (viewW() < 640) $('tray').open = false;
+
+// ---------- GL helpers ----------
+function shader(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function program(vs, fs, names) {
+  const p = gl.createProgram();
+  gl.attachShader(p, shader(gl.VERTEX_SHADER, vs)); gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {}; for (const n of names) u[n] = gl.getUniformLocation(p, n);
+  return { p, u };
+}
+
+// Each blob is an instanced quad holding an uneven capsule: a bottom circle (r1) and a top
+// circle (r2) joined by tangents, rotated by an angle. A round drop is the case r1 = r2, len = 0.
+// The fragment writes a metaball field (R) for the outline and a height (G) for the lens.
+// Overlapping fields fuse, so touching water reads as one body.
+const BLOB_VS = `#version 300 es
+layout(location=0) in vec2 aQuad;
+layout(location=1) in vec4 aA;   // x, y, r1, r2 (px)
+layout(location=2) in vec4 aB;   // len, angle, p0, p1
+uniform vec2 uView;
+uniform float uMargin;
+out vec2 vL;
+out vec2 vW;
+out vec4 vA;
+out vec4 vB;
+flat out ivec3 vM;   // streams: end caps, and the cut lines where each piece meets the next
+void main() {
+  int code = int(aB.w + 0.5);
+  vM = ivec3(code & 3, (code >> 2) & 1023, (code >> 12) & 1023);
+  float R = max(aA.z, aA.w) * (1.0 + uMargin + aB.z) + 1.5;
+  float lx = aQuad.x * R;
+  float ly = mix(-R, aB.x + R, aQuad.y * 0.5 + 0.5);
+  float c = cos(aB.y), s = sin(aB.y);
+  vec2 px = aA.xy + vec2(c * lx + s * ly, s * lx - c * ly);
+  gl_Position = vec4(px.x / uView.x * 2.0 - 1.0, 1.0 - px.y / uView.y * 2.0, 0.0, 1.0);
+  vL = vec2(lx, ly); vW = px; vA = aA; vB = aB;
+}`;
+const BLOB_FS = `#version 300 es
+precision highp float;
+in vec2 vL;
+in vec2 vW;
+in vec4 vA;
+in vec4 vB;
+flat in ivec3 vM;
+uniform int uMode;
+uniform float uHcap;   // the tallest a drop can stand on the glass, in CSS px (gravity caps it)
+out vec4 o;
+float sdCap(vec2 p, float r1, float r2, float h) {
+  p.x = abs(p.x);
+  if (h < abs(r1 - r2) + 0.01) return length(p) - max(r1, r2);
+  float b = (r1 - r2) / h, a = sqrt(1.0 - b * b);
+  float k = dot(p, vec2(-b, a));
+  if (k < 0.0) return length(p) - r1;
+  if (k > a * h) return length(p - vec2(0.0, h)) - r2;
+  return dot(p, vec2(a, b)) - r1;
+}
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+void main() {
+  float r1 = vA.z, r2 = vA.w, h = vB.x;
+  float s = sdCap(vL, r1, r2, h);
+  if (uMode == 0) {
+    // p0 = how uneven the edge is, p1 = seed: the outline wobbles with angle around the body
+    float th = atan(vL.y - h * 0.4, vL.x);
+    float sd = vB.w;
+    float big = clamp(r1 / uHcap - 0.6, 0.0, 1.0);   // 0 for small drops, 1 for big ones
+    // big drops get caught at points on the glass, so their outline is wavier
+    s -= (0.5 * sin(2.0 * th + sd) + 0.3 * sin(3.0 * th + sd * 1.7) + 0.2 * sin(5.0 * th + sd * 2.9)
+          + 0.14 * big * sin(7.0 * th + sd * 4.3)) * vB.z * r1;
+    float d = max(0.0, 1.0 + s / r1);
+    float f = d < 1.3 ? pow(1.0 - d * d / 1.69, 3.0) : 0.0;
+    // Gravity caps how tall water stands on glass: a small drop is a full dome, a big one levels
+    // off into a flat-topped puddle with steep sides. On a vertical pane it is also lopsided:
+    // fuller and steeper along its lower edge, thinner toward the top.
+    float lin = max(0.0, 1.0 - d * d) * r1;
+    float vfac = mix(1.0, mix(1.25, 0.6, smoothstep(-r1, h + r2, vL.y)), big);
+    o = vec4(f, uHcap * tanh(lin / uHcap) * vfac / 32.0, 0.0, 0.0);
+  } else if (uMode == 5) {
+    // Tail of a running drop: the water thins toward the wet track it leaves, so there is no edge
+    // to see. Its field and height fade away along its length, and B marks it as thin film.
+    float d = max(0.0, 1.0 + s / r1);
+    float f = d < 1.3 ? pow(1.0 - d * d / 1.69, 3.0) : 0.0;
+    float along = clamp(vL.y / (h + r2), 0.0, 1.0), fade = pow(1.0 - along, 1.4);
+    float above = smoothstep(-0.3 * r1, 0.4 * r1, vL.y);
+    if (vB.w > 0.5) {   // a piece of wet trail: even, at the given strength, and only its own slab so pieces join seamlessly
+      fade = vB.z; above = (vL.y >= 0.0 && vL.y < h) ? 1.0 : 0.0;
+    }
+    o = vec4(f * fade * above, max(0.0, 1.0 - d * d) * r1 * 0.35 * fade * above / 32.0, 0.45 * above * (1.0 - smoothstep(0.9, 1.3, d)), 0.0);
+  } else if (uMode == 3) {
+    // stream: a low, flat film of water stuck to the glass, wider than it is deep: a broad, nearly
+    // level top that shows the glass behind almost unchanged, bending light mostly at its edges.
+    // Height keeps one smooth cross-section (blended with MAX). The outline field goes to alpha and
+    // adds up, so wherever water meets water the join rounds off the way a liquid does. Each
+    // piece only adds its own share, cut where it meets the next piece along the line halving the
+    // angle between them (p1 packs the caps and both cut lines), so the pieces of a bending stream
+    // fit together without gaps or overlaps and a stream doesn't swell itself.
+    float d = max(0.0, 1.0 + s / r1);
+    float f = d < 1.3 ? pow(1.0 - d * d / 1.69, 3.0) : 0.0;
+    int caps = vM.x;
+    float mb = vM.y == 0 ? 0.0 : float(vM.y - 512) / 511.0, ma = vM.z == 0 ? 0.0 : float(vM.z - 512) / 511.0;
+    if ((caps & 1) == 0 && dot(vL, vec2(mb, sqrt(1.0 - mb * mb))) < 0.0) f = 0.0;
+    if ((caps & 2) == 0 && dot(vL - vec2(0.0, h), vec2(ma, sqrt(1.0 - ma * ma))) >= 0.0) f = 0.0;
+    float e = min(d, 1.0);
+    float e2 = e * e;
+    o = vec4(0.0, (1.0 - e2 * e2 * e2) * r1 * 0.4 / 32.0, d < 1.0 ? 1.0 : 0.0, f);
+  } else if (uMode == 8) {
+    // The thin film of water a wipe (or a running drop) leaves behind: thickness in R (p0), laid
+    // over what was there. It is left uneven, pooling thicker here and thinner there (a pattern
+    // fixed to the glass, so the stamps of a stroke never print the finger's shape); then it
+    // levels out and runs down on its own (see FILM_FS).
+    float cover = 1.0 - smoothstep(0.7, 1.0, 1.0 + s / max(r1, r2));
+    float pool = 0.35 + 1.3 * vnoise(vW * vec2(0.045, 0.022)) * (0.6 + 0.4 * vnoise(vW * 0.11 + 9.0));
+    o = vec4(vB.z * pool, 0.0, 0.0, cover);
+  } else if (uMode == 1) {
+    o = vec4(0.0, 0.0, 0.0, 1.0 - smoothstep(0.55, 1.0, 1.0 + s / r1));
+  } else {
+    // finger contact: the whole finger lies flat and clears the glass fully, with only a soft rim,
+    // so the stamps along a stroke merge into one clean wiped band and never print the finger's shape
+    float d = 1.0 + s / max(r1, r2);
+    o = vec4(0.0, 0.0, 0.0, 1.0 - smoothstep(0.8, 1.0, d));
+  }
+}`;
+const blob_names = ['uView', 'uMargin', 'uMode', 'uHcap'];
+const QUAD_VS = `#version 300 es
+layout(location=0) in vec2 aQuad;
+out vec2 vUv;
+void main() { vUv = aQuad * 0.5 + 0.5; gl_Position = vec4(aQuad, 0.0, 1.0); }`;
+const FILL_FS = `#version 300 es
+precision highp float;
+uniform vec4 uColor;
+out vec4 o;
+void main() { o = uColor; }`;
+// The thin water film on wiped glass, one step at a time: surface tension levels it out, gravity
+// draws it down the pane (a thicker film runs faster), and it slowly dries.
+const FILM_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uF;
+uniform vec2 uTx;
+uniform float uDt;
+out vec4 o;
+void main() {
+  float hc = texture(uF, vUv).r;
+  float v = (0.02 + 0.9 * hc * hc) * uDt;
+  float h = texture(uF, vUv + vec2(0.0, uTx.y * v)).r;   // the film here has run down from just above
+  float lap = texture(uF, vUv + vec2(uTx.x, 0.0)).r + texture(uF, vUv - vec2(uTx.x, 0.0)).r
+            + texture(uF, vUv + vec2(0.0, uTx.y)).r + texture(uF, vUv - vec2(0.0, uTx.y)).r - 4.0 * hc;
+  h += 0.1 * min(uDt, 2.0) * lap;
+  h *= pow(0.999, uDt);
+  o = vec4(max(h, 0.0), 0.0, 0.0, 1.0);
+}`;
+const FINAL_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 o;
+uniform sampler2D uWater;
+uniform sampler2D uMist;
+uniform sampler2D uBg;
+uniform sampler2D uFilm;   // thin water film on wiped glass (thickness in R)
+uniform vec2 uFilmTx;
+uniform vec2 uBgAnchor;
+uniform vec2 uTexel;
+uniform vec2 uBgScale;
+uniform vec2 uBgSize;
+uniform float uAspect;
+uniform float uRefract;
+uniform float uFog;
+uniform float uLod;
+uniform float uTime;      // seconds
+uniform float uRainOut;   // how much rain is falling outside, 0..1
+uniform float uWind;      // -1..1, slants the rain outside
+uniform float uFlash;     // lightning, 0..1
+uniform float uWdpr;      // water-map texels per CSS pixel
+uniform float uHcap;      // same cap as the blobs: the height a big, flat-topped drop levels off at
+const float T = 0.068;
+
+float hash1(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+// Rain falling outside, well beyond the glass and out of focus: three depths of soft, slanted
+// streaks moving down. 'soft' widens them for the fogged, blurred view.
+float rainOutside(vec2 uv, float soft) {
+  vec2 q = vec2(uv.x / uAspect, uv.y);
+  q.x += q.y * uWind * 0.3;
+  float pxw = fwidth(q.x);   // one screen pixel, in these units (taken outside the loop)
+  float sum = 0.0;
+  for (int k = 0; k < 4; k++) {
+    // far off behind the window: many fine, thin streaks falling fast (rain drops at ~9 m/s, so it
+    // crosses the view in well under a second); the nearer layers longer and faster
+    float fk = float(k), scale = 70.0 * (1.0 + fk * 0.9), speed = 4.2 - fk * 0.65;
+    float c = floor(q.x * scale), fx = fract(q.x * scale);
+    float h = hash1(c + fk * 31.7);
+    if (h < 0.8 - 0.75 * uRainOut) continue;   // heavier rain, more streaks: sparse in a shower, dense in a downpour
+    float y = fract(q.y * (0.8 + 0.3 * h) + uTime * speed * (0.7 + 0.6 * h) + h * 9.0);
+    float len = 0.1 + 0.12 * h;   // motion blur: each drop smears into a streak along its fall
+    // seen through fog the streak spreads into a soft smear: wider, with long faded ends
+    float along = smoothstep(0.0, len * (0.25 + soft * 0.5), y) * (1.0 - smoothstep(len * (0.25 - soft * 0.1), len * (1.0 + soft * 0.8), y));
+    // through clear glass a streak is a crisp line about a pixel wide; through fog a soft smear
+    float wdt = mix(max(0.02, pxw * scale * 0.9), 0.03 + 0.55, soft);
+    float off = abs(fx - 0.5 - (h - 0.65) * 0.7 * (1.0 - soft * 0.6));
+    float across = soft > 0.5 ? 1.0 - smoothstep(0.0, wdt, off) : 1.0 - smoothstep(wdt * 0.4, wdt, off);
+    sum += along * across * (1.0 - fk * 0.15);
+  }
+  return sum * uRainOut;
+}
+// The view fills the pane like a cover crop, pinned at uBgAnchor: its centre (0.5, 0.5), or for a
+// video its bottom-left corner (0, 0). It holds still: the pointer never moves it.
+vec2 bgUv(vec2 uv) { return (uv - uBgAnchor) * uBgScale + uBgAnchor; }
+vec3 lit(vec3 c) { return c * (1.0 + uFlash * 1.8) + uFlash * vec3(0.12, 0.13, 0.16); }
+// rk: how much of the crisp rain shows (none where the glass is fogged over)
+vec3 bgAt(vec2 uv, float lod, float rk) {
+  vec3 c = textureLod(uBg, bgUv(uv), lod).rgb;
+  return lit(c + (vec3(0.62, 0.67, 0.74) + c * 0.6) * rainOutside(uv, 0.0) * 0.3 * rk);   // streaks catch the light behind them
+}
+// Out-of-focus view: a disc of samples (a camera's bokeh) in which bright lights count for more,
+// so they open into soft round discs instead of smudges.
+vec3 bgBlur(vec2 uv, float lod) {
+  vec2 b = bgUv(uv);
+  vec2 R = exp2(lod) / uBgSize * 1.25;
+  float l = max(0.0, lod - 1.5);
+  vec3 acc = vec3(0.0); float wsum = 0.0;
+  for (int i = 0; i < 20; i++) {
+    float fi = float(i) + 0.5, rr = sqrt(fi / 20.0), a = fi * 2.39996;
+    vec3 c = textureLod(uBg, b + vec2(cos(a), sin(a)) * rr * R, l).rgb;
+    float lum = dot(c, vec3(0.299, 0.587, 0.114));
+    float wt = (1.0 + 6.0 * pow(max(lum - 0.55, 0.0), 2.0)) * (0.85 + 0.3 * rr);
+    acc += c * wt; wsum += wt;
+  }
+  vec3 c = acc / wsum;
+  // the rain seen through fog, smeared further: a few taps spread along and across its fall
+  float r = rainOutside(uv, 1.0) * 0.36;
+  r += (rainOutside(uv + vec2(0.0, 0.05), 1.0) + rainOutside(uv - vec2(0.0, 0.05), 1.0)) * 0.2;
+  r += (rainOutside(uv + vec2(0.004, 0.0), 1.0) + rainOutside(uv - vec2(0.004, 0.0), 1.0)) * 0.12;
+  return lit(c + (vec3(0.6, 0.65, 0.72) + c * 0.5) * r * 0.09);   // blurred and dimmed by the fog on the glass
+}
+// What a water surface reflects back toward the viewer: the dim room, a little lighter toward the
+// ceiling, with the warm lamp up to the left as a bright lobe. rd points back into the room.
+vec3 roomEnv(vec3 rd) {
+  vec3 L = normalize(vec3(-0.4, 0.75, 0.9));
+  vec3 c = vec3(0.035, 0.037, 0.045) + vec3(0.05, 0.05, 0.055) * smoothstep(-0.3, 0.8, rd.y);
+  c += vec3(1.5, 1.2, 0.85) * pow(max(dot(rd, L), 0.0), 30.0);
+  return c * (1.0 + uFlash * 3.0);
+}
+// A faint reflection of the room behind the viewer on the glass: a warm lamp up to the left.
+vec3 roomReflection(vec2 uv) {
+  vec2 d = (uv - vec2(0.16, 0.82)) * vec2(1.0 / uAspect, 1.0);
+  float lamp = exp(-dot(d, d) * 9.0);
+  return vec3(1.0, 0.78, 0.52) * (lamp * 0.09 + 0.012) + vec3(0.6, 0.65, 0.75) * 0.01 * uv.y;
+}
+void main() {
+  vec2 uv = vUv;
+  vec4 w = texture(uWater, uv);
+  float field = w.r + w.a;   // the rain on the outside: drops in R, streams in A
+  float fw = max(fwidth(field), 1e-4);
+  float stream = step(0.7, w.b);                              // streams write 1 into B
+  float film = clamp(w.b / 0.45, 0.0, 1.0) * (1.0 - stream);  // a running drop's tail: thin water, no edge
+  float soft = mix(fw, T * 0.9, max(film, stream * 0.35));   // streams: soft edges where the film thins out
+  float mask = smoothstep(T - soft, T + soft, field);
+
+  vec4 wL = texture(uWater, uv - vec2(uTexel.x * 2.0, 0.0)), wR = texture(uWater, uv + vec2(uTexel.x * 2.0, 0.0));
+  vec4 wD = texture(uWater, uv - vec2(0.0, uTexel.y * 2.0)), wU = texture(uWater, uv + vec2(0.0, uTexel.y * 2.0));
+  vec2 grad = vec2(wR.g - wL.g, wU.g - wD.g) * 8.0 * uWdpr;
+  float thickPx = w.g * 32.0;   // water depth here, in CSS pixels
+  vec3 n = normalize(vec3(-grad * 0.65, 1.0));
+
+  // The inside of the pane: fogged with condensation (B) except where the fingers have wiped it,
+  // and the little drops of condensation they leave (R, G). It lies over everything outside.
+  vec4 mistT = texture(uMist, uv);
+  float fogged = clamp(mistT.b, 0.0, 1.0), fog = fogged * uFog;
+  // Wet glass: the thin film of water a wipe leaves (see FILM_FS). Where it lies, the view bends
+  // with its uneven surface like through liquid glass, a little deeper in colour, with a faint
+  // sheen where the surface curves. Very light: it shows mostly as a gentle waver.
+  float fh = texture(uFilm, uv).r;
+  vec2 ft = uFilmTx * 1.5;
+  vec2 fg = vec2(texture(uFilm, uv + vec2(ft.x, 0.0)).r - texture(uFilm, uv - vec2(ft.x, 0.0)).r,
+                 texture(uFilm, uv + vec2(0.0, ft.y)).r - texture(uFilm, uv - vec2(0.0, ft.y)).r);
+  float wetK = smoothstep(0.0, 0.12, fh);
+  vec2 filmOff = -fg * 0.2 * uRefract * vec2(uAspect, 1.0);
+  vec3 sharp = bgAt(uv + filmOff, 0.8 + 0.5 * wetK, (1.0 - fogged) * (1.0 - fogged));   // crisp rain only through clear glass
+  float sLum = dot(sharp, vec3(0.299, 0.587, 0.114));
+  sharp = mix(vec3(sLum), sharp, 1.0 + 0.15 * wetK) * (1.0 - 0.06 * wetK);
+  sharp += vec3(0.78, 0.82, 0.88) * (0.6 * max(fg.y - 0.3 * fg.x, 0.0) + 0.03 * wetK);
+  vec3 hazy = bgBlur(uv, uLod);
+  vec3 bloom = max(hazy - 0.62, 0.0) * 0.6;   // bright lights glow
+  float lum = dot(hazy, vec3(0.299, 0.587, 0.114));
+  hazy = mix(hazy, vec3(lum), 0.25) * 0.8 + vec3(0.085, 0.09, 0.1);
+  // fog scatters light: bright lights spread a soft halo well beyond their bokeh
+  vec3 far = lit(textureLod(uBg, bgUv(uv), uLod + 2.2).rgb);
+  vec3 halo = max(far - 0.42, 0.0) * 0.7 * fog;
+  vec3 glass = sharp;   // the outside of the glass; the fog goes over it further down
+  // around each drop: a wet halo where the film thins out, a faint contact line right at its edge,
+  // and the light it gathers falling as a soft glow just below it (a faint shade just above)
+  float fieldU = wU.r + wU.a, fieldD = wD.r + wD.a;
+  float near = smoothstep(T * 0.3, T * 0.95, field) * (1.0 - smoothstep(T * 0.95, T * 1.05, field));
+  glass *= 1.0 - 0.18 * smoothstep(T * 0.7, T * 0.98, field) * (1.0 - smoothstep(T * 0.98, T * 1.02, field)) * (1.0 - film);
+  float below = clamp((fieldU - fieldD) / max(field, 1e-3), -1.0, 1.0);
+  glass += hazy * near * max(below, 0.0) * 0.25 - glass * near * max(-below, 0.0) * 0.08;
+  // Drop: a tiny lens. Displacement grows toward the rim, so the view inside is flipped.
+  // Optics: a sight line from the eye enters the water's curved surface (bending by Snell's law),
+  // then leaves through the flat glass, where its sideways component grows by the index of water.
+  // Near the middle the view barely shifts; toward the rim it swings ever faster, so the scene
+  // is magnified and flipped in the centre and squeezed into the edge.
+  vec3 nO = normalize(vec3(-grad * 1.1, 1.0));
+  vec3 tr = refract(vec3(0.0, 0.0, -1.0), nO, 1.0 / 1.333);
+  vec2 outXY = tr.xy * 1.333;
+  vec2 dev = outXY / sqrt(max(1.0 - dot(outXY, outXY), 0.04));
+  vec2 off = -dev * uRefract * 2.4 * vec2(uAspect, 1.0);
+  // water bends red a touch less than blue: the faintest color fringe toward the rim
+  float lodV = mix(1.8, 0.2, smoothstep(2.0, 10.0, thickPx));   // a tiny drop shows a softer miniature, a big one a crisp image
+  vec3 view = vec3(bgAt(uv - off * 0.97, lodV, 1.0).r, bgAt(uv - off, lodV, 1.0).g, bgAt(uv - off * 1.03, lodV, 1.0).b);
+  vec3 inside = mix(view * 1.15, hazy * 1.12, 0.3) + 0.03 + bloom * 0.5;   // clear water: lighter than the fogged glass
+  inside += max(view - 0.6, 0.0) * 1.1;   // the street's lights glint through each drop in their own colors
+  float slope = length(n.xy);
+  float rim = smoothstep(0.45, 0.77, slope);
+  inside *= 1.0 - rim * mix(0.3 + 0.25 * max(n.y, 0.0), 0.08, stream) * (1.0 - 0.85 * film);   // the upper rim reads darkest
+  float outline = (1.0 - smoothstep(T, T * 1.9, field)) * (1.0 - film) * (1.0 - 0.85 * stream);   // thin dark line where the surface turns away
+  inside = mix(inside, inside * 0.28, outline * 0.8);
+  // the drop is a lens: it gathers the light from behind into a bright crescent low inside it
+  vec3 sky = lit(textureLod(uBg, bgUv(uv + vec2(0.0, 0.06)), uLod).rgb);
+  inside += sky * smoothstep(0.15, 0.6, slope) * pow(max(-n.y, 0.0), 1.5) * 1.1 * (1.0 - film);
+  // deeper water is a touch cooler and darker, but brightest where it focuses best, at its centre
+  float depth = smoothstep(2.0, 18.0, thickPx);
+  inside = inside * mix(vec3(1.0), vec3(0.93, 0.97, 1.0), depth) + 0.035 * depth * (1.0 - slope);
+  vec3 L = normalize(vec3(-0.4, 0.75, 0.9));
+  float spec = pow(max(dot(reflect(-L, n), vec3(0.0, 0.0, 1.0)), 0.0), 90.0);
+  inside += spec * 0.75 * vec3(1.0, 0.93, 0.82) * (1.0 - stream) * (1.0 - film);   // the room lamp's highlight
+  inside += uFlash * pow(max(dot(reflect(-vec3(0.0, 0.6, 0.8), n), vec3(0.0, 0.0, 1.0)), 0.0), 20.0) * 0.6;   // lightning catches every drop
+  // Fresnel: the more steeply the surface turns away, the more it mirrors the room instead of
+  // showing what's behind; that is what gives drops and streams their glassy edges.
+  float fres = 0.02 + 0.98 * pow(1.0 - clamp(nO.z, 0.0, 1.0), 5.0);
+  inside = mix(inside, roomEnv(reflect(vec3(0.0, 0.0, -1.0), nO)), clamp(fres * 1.6, 0.0, 0.85) * (1.0 - 0.7 * film));
+  // A big, flat-topped drop: a dark band where its side plunges to the glass, a thin bright line of
+  // focused light just inside that band, and a broad soft sheen of the room's light across the top.
+  float hNear = max(max(max(wL.g, wR.g), max(wU.g, wD.g)), w.g) * 32.0;
+  float bigD = smoothstep(0.7, 0.92, hNear / uHcap) * (1.0 - stream) * (1.0 - film);
+  float slopeO = length(nO.xy);
+  float band = smoothstep(0.5, 0.8, slopeO);
+  float line = smoothstep(0.22, 0.34, slopeO) * (1.0 - smoothstep(0.34, 0.48, slopeO));
+  float flatTop = 1.0 - smoothstep(0.05, 0.25, slopeO);
+  float sheen = pow(max(dot(reflect(-normalize(vec3(-0.3, 0.55, 1.0)), nO), vec3(0.0, 0.0, 1.0)), 0.0), 8.0);
+  inside = mix(inside, inside * 0.45, band * bigD * 0.6);
+  inside += (vec3(0.22) + hazy * 0.25) * line * bigD;
+  inside += vec3(1.0, 0.95, 0.88) * sheen * flatTop * bigD * 0.07;
+  // streams catch the light across their flat crown: a soft, uneven sheen over roughly the middle half
+  float crown = (1.0 - smoothstep(0.06, 0.5, slope)) * stream;
+  // moving water shimmers: ripples on its surface carry small highlights downstream
+  float flow = uv.y * 90.0 + uTime * 36.0, wav = sin(flow + uv.x * 23.0) * sin(flow * 0.47 - uv.x * 9.0 + 1.7);
+  float vary = 0.65 + 0.35 * wav;
+  inside += (vec3(0.08) + hazy * 0.1) * crown * vary;
+  // lit from the upper left: a stream's left edge catches a highlight, its right edge falls darker
+  float sl = length(nO.xy);
+  inside += stream * (vec3(0.2) + hazy * 0.25) * smoothstep(0.1, 0.5, sl) * max(-nO.x / max(sl, 1e-3), 0.0) * 0.6;
+  inside *= 1.0 - stream * smoothstep(0.1, 0.5, sl) * max(nO.x / max(sl, 1e-3), 0.0) * 0.3;
+  float glintS = pow(max(wav, 0.0), 12.0) * (stream * (1.0 - smoothstep(0.1, 0.6, slope)) + film * 0.6);
+  inside += vec3(0.5, 0.48, 0.44) * glintS * 0.35;
+
+glass += bloom;
+vec3 col = mix(glass, inside, mask);   // everything outside: the street, and the rain on the pane
+
+// The condensation on the inside lies over all of it. Where the glass is fogged, the street shows
+// only as soft light through the haze, and the raindrops beyond it as faint, brighter blots.
+float blurF = 0.0;
+for (int i = 0; i < 8; i++) {
+  float a = float(i) * 0.785398;
+  vec4 b = texture(uWater, uv + vec2(cos(a), sin(a)) * uTexel * 6.0 * uWdpr);
+  blurF += b.r + b.a;
+}
+float hint = smoothstep(0.03, 0.3, blurF / 8.0 + field * 0.3);
+col = mix(col, mix(hazy, hazy * 1.12 + 0.02, hint * 0.6), fog) + halo;
+// Little drops of condensation on the inside (what a wipe leaves): tiny clear lenses over
+// everything, each showing the street bent and flipped through it.
+float mf = mistT.r;
+float mfw = max(fwidth(mf), 1e-4);
+float mMask = smoothstep(T - mfw, T + mfw, mf);
+vec2 mt = uTexel * 2.0;
+vec2 mg = vec2(texture(uMist, uv + vec2(mt.x, 0.0)).g - texture(uMist, uv - vec2(mt.x, 0.0)).g,
+               texture(uMist, uv + vec2(0.0, mt.y)).g - texture(uMist, uv - vec2(0.0, mt.y)).g) * 8.0 * uWdpr;
+vec3 mn = normalize(vec3(-mg * 1.1, 1.0));
+vec2 mo = refract(vec3(0.0, 0.0, -1.0), mn, 1.0 / 1.333).xy * 1.333;
+vec2 moff = -(mo / sqrt(max(1.0 - dot(mo, mo), 0.04))) * uRefract * 2.4 * vec2(uAspect, 1.0);
+vec3 mview = bgAt(uv - moff, 1.4, 1.0);
+vec3 cond = mview * 1.1 + 0.03 + max(mview - 0.6, 0.0) * 0.8;
+float mslope = length(mn.xy);
+cond *= 1.0 - smoothstep(0.45, 0.77, mslope) * (0.3 + 0.25 * max(mn.y, 0.0));   // the upper rim reads darkest
+cond = mix(cond, cond * 0.3, (1.0 - smoothstep(T, T * 1.9, mf)) * 0.8);         // a thin dark outline
+cond += pow(max(dot(reflect(-L, mn), vec3(0.0, 0.0, 1.0)), 0.0), 90.0) * 0.75 * vec3(1.0, 0.93, 0.82);
+float mfres = 0.02 + 0.98 * pow(1.0 - clamp(mn.z, 0.0, 1.0), 5.0);
+cond = mix(cond, roomEnv(reflect(vec3(0.0, 0.0, -1.0), mn)), clamp(mfres * 1.6, 0.0, 0.85));
+col = mix(col, cond, mMask);
+  col += roomReflection(uv) * (1.0 - 0.6 * dot(col, vec3(0.333)));   // seen mostly against the dark
+  float v = length((uv - 0.5) * vec2(1.0, 0.9));
+  col *= mix(1.0, 0.72, smoothstep(0.4, 0.9, v));
+  o = vec4(col, 1.0);
+}`;
+
+const blob = program(BLOB_VS, BLOB_FS, blob_names);
+const fill = program(QUAD_VS, FILL_FS, ['uColor']);
+const filmP = program(QUAD_VS, FILM_FS, ['uF', 'uTx', 'uDt']);
+const fin = program(QUAD_VS, FINAL_FS, ['uWater', 'uMist', 'uBg', 'uFilm', 'uFilmTx', 'uBgAnchor', 'uTexel', 'uBgScale', 'uBgSize', 'uAspect', 'uRefract', 'uFog', 'uLod', 'uTime', 'uRainOut', 'uWind', 'uFlash', 'uWdpr', 'uHcap']);
+
+const quadBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+const instBuf = gl.createBuffer();
+
+const vaoQuad = gl.createVertexArray();
+gl.bindVertexArray(vaoQuad);
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const vaoInst = gl.createVertexArray();
+gl.bindVertexArray(vaoInst);
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+gl.bufferData(gl.ARRAY_BUFFER, 32, gl.DYNAMIC_DRAW);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, 0); gl.vertexAttribDivisor(1, 1);
+gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 32, 16); gl.vertexAttribDivisor(2, 1);
+gl.bindVertexArray(null);
+
+function makeTarget(w, h) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  if (hasFloat) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  if (hasFloat && gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+    gl.deleteFramebuffer(fb); gl.deleteTexture(tex); hasFloat = false;
+    return makeTarget(w, h);
+  }
+  return { tex, fb, w, h };
+}
+function freeTarget(t) { gl.deleteFramebuffer(t.fb); gl.deleteTexture(t.tex); }
+function clearTarget(t, c) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, t.fb); gl.viewport(0, 0, t.w, t.h);
+  gl.clearColor(c[0], c[1], c[2], c[3]); gl.clear(gl.COLOR_BUFFER_BIT);
+}
+
+class Batch {
+  constructor() { this.a = new Float32Array(4096 * 8); this.n = 0; }
+  push(x, y, r1, r2, len, ang, p0, p1) {
+    if ((this.n + 1) * 8 > this.a.length) { const b = new Float32Array(this.a.length * 2); b.set(this.a); this.a = b; }
+    const i = this.n++ * 8, a = this.a;
+    a[i] = x; a[i + 1] = y; a[i + 2] = r1; a[i + 3] = r2; a[i + 4] = len; a[i + 5] = ang; a[i + 6] = p0; a[i + 7] = p1;
+  }
+}
+const droplets = new Batch(), erase = new Batch(), wipes = new Batch(), beads = new Batch(), dropQuads = new Batch(), streams = new Batch(), tails = new Batch();
+
+function drawBlobs(b, mode, margin) {
+  if (!b.n) return;
+  gl.useProgram(blob.p);
+  gl.uniform2f(blob.u.uView, simW, simH);
+  gl.uniform1f(blob.u.uMargin, margin);
+  gl.uniform1i(blob.u.uMode, mode);
+  gl.uniform1f(blob.u.uHcap, holdR() * 0.7);
+  gl.bindVertexArray(vaoInst);
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, b.a.subarray(0, b.n * 8), gl.DYNAMIC_DRAW);
+  gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, b.n);
+}
+function drawFill(r, g, b, a) {
+  gl.useProgram(fill.p);
+  gl.uniform4f(fill.u.uColor, r, g, b, a);
+  gl.bindVertexArray(vaoQuad);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+// ---------- background: a night street seen through the window ----------
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function paintCity() {
+  const w = 2048, h = 1280;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  const R = mulberry32(11), rnd = (a, b) => a + (b - a) * R();
+  const rgba = (col, a) => `rgba(${col[0]},${col[1]},${col[2]},${a})`;
+  const glow = (gx, gy, r, col, a) => {
+    const g = x.createRadialGradient(gx, gy, 0, gx, gy, r);
+    g.addColorStop(0, rgba(col, a)); g.addColorStop(0.22, rgba(col, a * 0.45)); g.addColorStop(1, rgba(col, 0));
+    x.fillStyle = g; x.fillRect(gx - r, gy - r, r * 2, r * 2);
+  };
+  const horizon = h * 0.7;
+
+  let g = x.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#04060c'); g.addColorStop(0.45, '#0e1322'); g.addColorStop(0.69, '#2c2333');
+  g.addColorStop(0.72, '#120f17'); g.addColorStop(1, '#060608');
+  x.fillStyle = g; x.fillRect(0, 0, w, h);
+
+  x.globalCompositeOperation = 'lighter';
+  glow(w * 0.28, horizon, 760, [255, 130, 60], 0.16);
+  glow(w * 0.76, horizon, 640, [110, 130, 255], 0.12);
+  x.globalCompositeOperation = 'source-over';
+
+  const layers = [
+    { col: '#10121c', minH: 140, maxH: 430, lit: 0.1, a: 0.5 },
+    { col: '#0a0b11', minH: 220, maxH: 660, lit: 0.17, a: 0.9 },
+  ];
+  const beacons = [];
+  for (const L of layers) {
+    let bx = -rnd(0, 80);
+    while (bx < w) {
+      const bw = rnd(80, 220), bh = rnd(L.minH, L.maxH), top = horizon - bh;
+      x.fillStyle = L.col; x.fillRect(bx, top, bw, bh + 4);
+      const cw = rnd(9, 15), ch = rnd(12, 19), gx = rnd(5, 9), gy = rnd(7, 12), warm = R() < 0.7;
+      for (let yy = top + gy; yy < horizon - ch; yy += ch + gy) {
+        for (let xx = bx + gx; xx < bx + bw - cw; xx += cw + gx) {
+          if (R() < L.lit) {
+            const col = warm ? [255, (175 + rnd(0, 60)) | 0, 105] : [170, 205, 255];
+            x.fillStyle = rgba(col, L.a * rnd(0.45, 1)); x.fillRect(xx, yy, cw, ch);
+          }
+        }
+      }
+      if (R() < 0.3) beacons.push([bx + bw / 2, top - 6]);
+      bx += bw + rnd(-12, 26);
+    }
+  }
+
+  x.globalCompositeOperation = 'lighter';
+  for (const [bx, by] of beacons) { glow(bx, by, 50, [255, 40, 30], 0.7); glow(bx, by, 6, [255, 120, 100], 1); }
+  const neon = [[255, 60, 170], [60, 225, 255], [150, 255, 120], [255, 125, 40]];
+  for (let i = 0; i < 6; i++) {
+    const nx = rnd(60, w - 220), ny = rnd(horizon - 300, horizon - 30), nw = rnd(60, 150), nh = rnd(10, 18);
+    const col = neon[(R() * neon.length) | 0];
+    x.fillStyle = rgba(col, 0.95); x.fillRect(nx, ny, nw, nh);
+    glow(nx + nw / 2, ny + nh / 2, nw * 1.1, col, 0.35);
+  }
+  for (let i = 0; i < 9; i++) {
+    const sx = i * w / 8 + rnd(-40, 40), sy = horizon + rnd(25, 60);
+    glow(sx, sy, 170, [255, 155, 55], 0.5); glow(sx, sy, 16, [255, 225, 175], 1);
+    const r = x.createLinearGradient(0, sy, 0, h);
+    r.addColorStop(0, rgba([255, 150, 60], 0.22)); r.addColorStop(1, rgba([255, 150, 60], 0));
+    x.fillStyle = r; x.fillRect(sx - 14, sy + 20, 28, h - sy);
+  }
+  for (let i = 0; i < 16; i++) {
+    const cx = rnd(0, w), cy = rnd(h * 0.84, h * 0.96), head = R() < 0.45, sep = rnd(26, 46);
+    const col = head ? [255, 244, 222] : [255, 38, 28];
+    for (const ox of [0, sep]) { glow(cx + ox, cy, 70, col, 0.55); glow(cx + ox, cy, 9, col, 1); }
+    const r = x.createLinearGradient(0, cy, 0, cy + 180);
+    r.addColorStop(0, rgba(col, 0.28)); r.addColorStop(1, rgba(col, 0));
+    x.fillStyle = r; x.fillRect(cx - 8, cy + 8, sep + 16, 180);
+  }
+  glow(w * 0.62, horizon + 40, 60, [80, 255, 140], 0.8); glow(w * 0.62, horizon + 40, 8, [180, 255, 200], 1);
+  x.globalCompositeOperation = 'source-over';
+  return c;
+}
+
+// An overcast evening street, mostly read as soft colour through the fogged pane.
+function paintDusk() {
+  const w = 2048, h = 1280;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  const R = mulberry32(5), rnd = (a, b) => a + (b - a) * R();
+  const pick = (arr) => arr[(R() * arr.length) | 0];
+  let g = x.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#6e8399'); g.addColorStop(0.35, '#93a6ba'); g.addColorStop(0.62, '#62717f'); g.addColorStop(1, '#2a3038');
+  x.fillStyle = g; x.fillRect(0, 0, w, h);
+  // facades and columns in cold blue-greys
+  for (let i = 0; i < 22; i++) {
+    x.globalAlpha = rnd(0.5, 0.9);
+    x.fillStyle = pick(['#34404d', '#4b5968', '#27303a', '#7f91a4', '#a9b8c6', '#5d6c7c']);
+    x.fillRect(rnd(-100, w), rnd(-50, h * 0.55), rnd(60, 300), h);
+  }
+  x.globalAlpha = 1;
+  // window grids give the inverted views inside drops something to resolve
+  for (let i = 0; i < 260; i++) {
+    x.fillStyle = pick(['rgba(230,238,245,0.5)', 'rgba(40,48,58,0.6)', 'rgba(255,214,140,0.55)']);
+    x.fillRect(rnd(0, w), rnd(0, h * 0.7), rnd(10, 26), rnd(14, 30));
+  }
+  const glowRect = (gx, gy, gw, gh, col, blur) => {
+    x.save(); x.shadowColor = col; x.shadowBlur = blur; x.fillStyle = col; x.fillRect(gx, gy, gw, gh); x.restore();
+  };
+  glowRect(w * 0.27, h * 0.03, 360, 80, '#f29a3e', 60);        // shop sign
+  glowRect(w * 0.47, h * 0.28, 250, 330, '#ffcf66', 90);       // lit window
+  glowRect(w * 0.3, h * 0.24, 230, 120, '#7d4fa8', 40);        // purple panel
+  glowRect(w * 0.84, h * 0.28, 160, 210, '#9b3f8d', 50);       // magenta sign
+  glowRect(w * 0.08, h * 0.12, 120, 300, '#c7d6e4', 30);       // pale doorway
+  glowRect(w * 0.62, h * 0.08, 90, 60, '#5fb7c9', 30);         // teal light
+  // a figure with an umbrella, dark against the light
+  x.fillStyle = '#141a22';
+  x.beginPath(); x.ellipse(w * 0.74, h * 0.27, 150, 60, 0, Math.PI, 0); x.fill();
+  x.fillRect(w * 0.74 - 60, h * 0.27, 120, h * 0.55);
+  // street: car lights and their reflections on wet asphalt
+  g = x.createLinearGradient(0, h * 0.7, 0, h);
+  g.addColorStop(0, 'rgba(20,24,30,0.2)'); g.addColorStop(1, 'rgba(15,18,22,0.85)');
+  x.fillStyle = g; x.fillRect(0, h * 0.7, w, h * 0.3);
+  glowRect(w * 0.06, h * 0.72, 260, 90, '#eef3f8', 50);
+  glowRect(w * 0.77, h * 0.74, 60, 26, '#e3403a', 40);
+  glowRect(w * 0.86, h * 0.74, 60, 26, '#e3403a', 40);
+  glowRect(w * 0.45, h * 0.8, 200, 40, '#ffb04a', 50);
+  return c;
+}
+const scenes = { dusk: paintDusk, night: paintCity };
+const bgTex = gl.createTexture();
+let bgW = 1, bgH = 1;
+function setBackground(src, w = src.width, h = src.height) {
+  gl.bindTexture(gl.TEXTURE_2D, bgTex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+  bgW = w; bgH = h;
+}
+setBackground(paintDusk());
+
+// A video behind the glass. Two copies of the clip play in turn: as one nears its end the other
+// starts from the beginning and the two crossfade, so the loop has no visible jump. The mix is
+// drawn into a canvas, which becomes the background texture.
+let vid = null;
+function stopVideo() {
+  if (!vid) return;
+  for (const v of vid.players) v.pause();
+  if (vid.url.startsWith('blob:')) URL.revokeObjectURL(vid.url);
+  vid = null;
+}
+// file: a dropped or chosen video, or the URL of one; onFail runs if it can't be played
+function useVideo(file, onFail) {
+  stopVideo();
+  const url = typeof file === 'string' ? file : URL.createObjectURL(file);
+  const make = () => {
+    const v = document.createElement('video');
+    v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
+    return v;
+  };
+  const a = make(), b = make();
+  if (onFail) a.addEventListener('error', onFail, { once: true });
+  a.addEventListener('loadeddata', () => {
+    const k = Math.min(1, 1280 / a.videoWidth);
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(a.videoWidth * k)); c.height = Math.max(1, Math.round(a.videoHeight * k));
+    vid = { url, players: [a, b], cur: 0, fading: false, canvas: c, ctx: c.getContext('2d'), lastT: -1 };
+    a.play().catch(() => {});
+  }, { once: true });
+}
+onTeardown(stopVideo);
+function updateVideo() {
+  if (!vid) return;
+  const cur = vid.players[vid.cur], next = vid.players[1 - vid.cur];
+  if (cur.readyState < 2 || !cur.duration) return;
+  const fade = Math.min(1.5, cur.duration * 0.25), start = cur.duration - fade;
+  if (!vid.fading && cur.currentTime >= start) {
+    vid.fading = true; next.currentTime = 0; next.play().catch(() => {});
+  }
+  let t = vid.fading ? Math.min(1, (cur.currentTime - start) / fade) : 0;
+  if (cur.ended) t = 1;
+  t = t * t * (3 - 2 * t);
+  if (cur.currentTime === vid.lastT && !vid.fading) return;
+  vid.lastT = cur.currentTime;
+  const { ctx, canvas: c } = vid;
+  ctx.globalAlpha = 1;
+  ctx.drawImage(cur, 0, 0, c.width, c.height);
+  if (vid.fading && next.readyState >= 2) { ctx.globalAlpha = t; ctx.drawImage(next, 0, 0, c.width, c.height); }
+  setBackground(c);
+  if (vid.fading && t >= 1) {   // hand over to the copy that is now playing
+    cur.pause(); vid.cur = 1 - vid.cur; vid.fading = false;
+  }
+}
+// The view outside: a painted scene, or a video clip that ships beside the page. A clip that fails
+// to load is tried twice more (a dropped connection shouldn't cost the street view) before falling
+// back to the dusk street, say when the page is opened without it.
+function showScene() {
+  const sel = $('scene'), opt = sel.selectedOptions[0];
+  stopVideo();
+  if (opt && opt.dataset.src) {
+    let tries = 0;
+    const failed = () => {
+      if (sel.value !== opt.value) return;
+      if (++tries < 3) setTimeout(() => { if (sel.value === opt.value) useVideo(opt.dataset.src, failed); }, 1000 * tries);
+      else { sel.value = 'dusk'; showScene(); }
+    };
+    useVideo(opt.dataset.src, failed);
+    return;
+  }
+  setBackground((scenes[sel.value] || paintDusk)());
+}
+$('scene').addEventListener('change', showScene);
+showScene();
+
+async function loadPhoto(file) {
+  if (file && file.type.startsWith('video/')) { useVideo(file); return; }
+  if (!file || !file.type.startsWith('image/')) return;
+  stopVideo();
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, 2048 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  setBackground(c);
+}
+$('photo').addEventListener('change', (e) => loadPhoto(e.target.files[0]));
+onPage('dragover', (e) => e.preventDefault());
+onPage('drop', (e) => { e.preventDefault(); loadPhoto(e.dataTransfer.files[0]); });
+
+// ---------- sizing ----------
+let simW = 0, simH = 0, S = 1, D = null, W = null, F = [null, null];
+function resize() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  simW = Math.max(1, Math.round(viewW())); simH = Math.max(1, Math.round(viewH()));
+  S = Math.max(0.6, Math.min(1.4, Math.min(simW, simH) / 820));
+  canvas.width = Math.round(simW * dpr); canvas.height = Math.round(simH * dpr);
+  // the water is drawn at the screen's real pixel density, up to ~4.5 megapixels
+  const wd = Math.max(1, Math.min(dpr, Math.sqrt(4.5e6 / (simW * simH))));
+  const tw = Math.round(simW * wd), th = Math.round(simH * wd);
+  if (!D || D.w !== tw || D.h !== th) {
+    if (D) { freeTarget(D); freeTarget(W); freeTarget(F[0]); freeTarget(F[1]); }
+    D = makeTarget(tw, th); W = makeTarget(tw, th);
+    clearTarget(D, [0, 0, 1, 0]);
+    // the water film is smooth, so a coarse grid holds it (drawn smoothly by linear filtering)
+    const fw = Math.max(1, Math.round(simW / 3)), fh = Math.max(1, Math.round(simH / 3));
+    F = [makeTarget(fw, fh), makeTarget(fw, fh)];
+    clearTarget(F[0], [0, 0, 0, 0]); clearTarget(F[1], [0, 0, 0, 0]);
+  }
+  for (const d of drops) if (d.x > simW + d.r || d.y > simH + d.r) d.dead = true;
+  hand = handGeom();
+  resetWipeGrid();
+}
+
+// ---------- simulation ----------
+const drops = [];
+const MAX = 1600;
+const rand = Math.random;
+// Drops always come at full size, and twice that on phone-width views, where the glass is small
+// and desktop-size drops read as specks.
+const radii = () => {
+  const maxR = 11.54 * S * (viewW() < 640 ? 2.4 : 1);
+  return { minR: Math.min(1.6 * S, maxR * 0.14), maxR };
+};
+// The most water a drop can hold on the glass: below this radius it stays put, however long it
+// sits; once it grows past it (by merging), gravity wins and it slides. Kept small, so the water
+// that runs down (drops and the streams they feed) is slender.
+const holdR = () => radii().maxR * 0.48;
+// The biggest a drop can look: water a drop takes in beyond this doesn't make it any bigger,
+// it is carried as extra weight (d.extra) that keeps it running fast, and enough of it opens a stream.
+const maxDropR = () => holdR() * 1.25;
+// A drop pinned hard to the glass (grime, or just where it sits) holds on far longer, growing big
+// by merging before it lets go; this is the largest a resting drop gets.
+const bigR = () => radii().maxR * 0.95;
+const bead = (b, x, y, r, wob = 0.08) => b.push(x, y, r, r, 0, 0, wob, rand() * 6.283);
+const eraseAt = (x, y, r) => erase.push(x, y, r, r, 0, 0, 0, 0);
+// Small leftover water (trail beads, splashes, what a wipe or a dried stream leaves) is made of
+// real drops: anything touching merges, running drops pick it up, and the smallest evaporate.
+const smallDrop = (x, y, r) => addDrop(x, y, r, { stick: 3 });
+
+// Two surfaces: the rain is on the outside of the pane, the condensation on the inside, where the
+// fingers wipe. Wiping clears the inside and never touches the raindrops.
+// Where the inside was wiped (1 = freshly wiped, fading as it fogs back over), and how fast
+// condensation forms back over it, per frame; more condensation, faster.
+const condenseRate = () => (0.0006 + 0.0014 * P.mist) * (0.5 + P.humid);   // damp air fogs the glass back faster
+const WG = 6;
+let wgW = 0, wgH = 0, wg = new Float32Array(0);
+// A second grid on the same cells remembers where water has run: drop trails and streams leave
+// the glass wet, and water is drawn to wet glass, so later drops find and follow those paths.
+let wet = new Float32Array(0);
+// The pane isn't uniformly clean: an invisible map of dust and old residue (0 clean .. 1 grimy)
+// where drops pin harder, snag more and condensation gathers, and streams prefer cleaner glass.
+let dirt = new Float32Array(0);
+const DIRT_SEED = (Math.random() * 2 ** 32) >>> 0;   // a different pane each visit, so streams find different paths
+function resetWipeGrid() {
+  wgW = Math.ceil(simW / WG) + 2; wgH = Math.ceil(simH / WG) + 2;
+  wg = new Float32Array(wgW * wgH); wet = new Float32Array(wgW * wgH);
+  dirt = new Float32Array(wgW * wgH);
+  const R = mulberry32(DIRT_SEED), ph = Array.from({ length: 8 }, () => R() * 6.283);
+  for (let j = 0; j < wgH; j++) {
+    for (let i = 0; i < wgW; i++) {
+      const x = i * WG, y = j * WG;
+      let v = 0.5 + 0.22 * Math.sin(x * 0.011 + ph[0]) * Math.sin(y * 0.009 + ph[1]) + 0.16 * Math.sin(x * 0.027 + y * 0.013 + ph[2])
+        + 0.12 * Math.sin(y * 0.031 - x * 0.019 + ph[3]) + 0.08 * Math.sin(x * 0.071 + ph[4]) * Math.sin(y * 0.063 + ph[5]);
+      if (R() < 0.015) v += 0.35;   // a speck of grit
+      dirt[j * wgW + i] = Math.min(1, Math.max(0, v));
+    }
+  }
+  sill = new Float32Array(Math.ceil(simW / WG) + 2);
+}
+const dirtAt = (x, y) => sampleGrid(dirt, x, y);
+
+// Water that reaches the bottom of the pane gathers along its edge in a ridge, spreads sideways,
+// and drips off wherever it gets too heavy. sill[i] is the volume over each 6px column.
+let sill = new Float32Array(0);
+const sillThick = (x) => {
+  const i = Math.max(0, Math.min(sill.length - 1, Math.round(x / WG)));
+  return Math.min(14 * S, Math.sqrt(sill[i] / (WG * 1.5)));
+};
+function addToSill(x, vol) {
+  const i = Math.round(x / WG);
+  for (let k = -2; k <= 2; k++) { const j = i + k; if (j >= 0 && j < sill.length) sill[j] += vol * [0.1, 0.2, 0.4, 0.2, 0.1][k + 2]; }
+}
+function stepSill(dt) {
+  const cap = (holdR() * 2.4) ** 3, n = sill.length;
+  const next = sill.slice();
+  for (let i = 0; i < n; i++) {
+    const l = sill[Math.max(0, i - 1)], r = sill[Math.min(n - 1, i + 1)];
+    next[i] += (l + r - 2 * sill[i]) * 0.12 * Math.min(1, dt);   // spreads along the edge
+    next[i] *= Math.pow(0.9996, dt);                             // slowly evaporates
+    if (next[i] > cap && rand() < 0.05 * dt) next[i] -= cap * 0.6; // drips off the edge
+  }
+  sill = next;
+}
+function markWet(x, y, R) {
+  const x0 = Math.max(0, Math.floor((x - R) / WG)), x1 = Math.min(wgW - 1, Math.ceil((x + R) / WG));
+  const y0 = Math.max(0, Math.floor((y - R) / WG)), y1 = Math.min(wgH - 1, Math.ceil((y + R) / WG));
+  for (let j = y0; j <= y1; j++) {
+    for (let i = x0; i <= x1; i++) {
+      const v = 1 - Math.hypot(i * WG - x, j * WG - y) / R;
+      const k = j * wgW + i; if (v > wet[k]) wet[k] = v;
+    }
+  }
+}
+function sampleGrid(g, x, y) {
+  const fx = Math.max(0, Math.min(wgW - 1.001, x / WG)), fy = Math.max(0, Math.min(wgH - 1.001, y / WG));
+  const i = fx | 0, j = fy | 0, u = fx - i, v = fy - j, k = j * wgW + i;
+  return (g[k] * (1 - u) + g[k + 1] * u) * (1 - v) + (g[k + wgW] * (1 - u) + g[k + wgW + 1] * u) * v;
+}
+// sideways pull toward wetter glass just below (x, y)
+const wetPull = (x, y, span) => sampleGrid(wet, x + span, y) - sampleGrid(wet, x - span, y);
+function markWiped(x, y, r, v) {
+  const x0 = Math.max(0, Math.floor((x - r) / WG)), x1 = Math.min(wgW - 1, Math.ceil((x + r) / WG));
+  const y0 = Math.max(0, Math.floor((y - r) / WG)), y1 = Math.min(wgH - 1, Math.ceil((y + r) / WG));
+  for (let j = y0; j <= y1; j++) {
+    for (let i = x0; i <= x1; i++) {
+      if ((i * WG - x) ** 2 + (j * WG - y) ** 2 > r * r) continue;
+      const k = j * wgW + i; if (wg[k] < v) wg[k] = v;
+    }
+  }
+}
+const wipedAt = (x, y) => sampleGrid(wg, x, y);
+
+function addDrop(x, y, r, o = {}) {
+  const d = { x, y, r, vx: 0, vy: 0, moving: false, spread: o.spread || 0, trailY: y, gap: 0, stick: o.stick || 1 + rand(), pin: 1 + rand() * rand() * 3, dead: false };
+  reshape(d);
+  for (const e of drops) {
+    if (e.dead) continue;
+    const dx = e.x - x, dy = e.y - y, rr = (e.r + r) * 0.95;
+    if (dx * dx + dy * dy < rr * rr) { merge(e, d); return e; }
+  }
+  if (drops.length >= MAX) return null;
+  drops.push(d);
+  return d;
+}
+// Resting drops are never round: they pin unevenly on the glass and sag under their own weight.
+function reshape(d) {
+  d.wob = 0.05 + rand() * 0.12; d.seed = rand() * 6.283; d.sag = rand(); d.tilt = (rand() - 0.5) * 0.3;
+}
+// Touching drops become one drop holding their combined volume, shaped like the larger one.
+// A running drop that takes in another runs on from where it is (swerving a little toward it).
+function merge(a, b) {
+  const ma = a.r ** 3, mb = b.r ** 3, wasMoving = a.moving;
+  if (!wasMoving) {
+    a.x = (a.x * ma + b.x * mb) / (ma + mb);
+    a.y = (a.y * ma + b.y * mb) / (ma + mb);
+  }
+  const tot = ma + mb, cap = (a.moving || b.moving ? maxDropR() : bigR()) ** 3;   // resting drops can pool big; running ones stay slender
+  a.r = Math.cbrt(Math.min(tot, cap));
+  a.extra = (a.extra || 0) + (b.extra || 0) + Math.max(0, tot - cap);
+  a.moving = a.moving || b.moving;
+  a.vy = Math.max(a.vy, b.vy) * 0.9 + (a.moving ? 0.3 : 0);
+  a.vx = (a.vx * ma + b.vx * mb) / (ma + mb);
+  if (a.moving) a.kick = (a.kick || 0) + (b.x - a.x) * 0.08 * mb / (ma + mb);   // swerves toward the water it took in
+  a.stick = Math.min(a.stick, b.stick);
+  a.spread = Math.max(a.spread, 0.06);
+  if (mb > ma) { a.wob = b.wob; a.seed = b.seed; a.sag = b.sag; a.tilt = b.tilt; a.pin = b.pin; }
+  if (a.moving && !wasMoving) { a.trailY = a.y; a.gap = a.r; }
+  a.jig = Math.min(0.08, 0.02 + 0.12 * Math.min(ma, mb) / (ma + mb)); a.jigT = 0;   // the merged drop quivers slightly as it settles
+  if (b.pull && b.pull !== a) b.pull.pull = null;
+  b.dead = true;
+}
+
+let grid = new Map(), cell = 64;
+// Water is viscous and its surface pulls together: drops whose edges come within about a
+// pixel connect. A running drop swallows what it meets at once; two resting drops first join
+// by a neck, then flow together over a fraction of a second into one drop of their total volume.
+const pulls = [];
+let burstCount = 0;
+const reach = (d) => d.r * (1 + d.spread) * (1 + 0.5 * (d.wob || 0));
+function stepPulls(dt) {
+  for (let i = pulls.length - 1; i >= 0; i--) {
+    const [a, b] = pulls[i];
+    if (a.dead || b.dead) { if (!a.dead) a.pull = null; if (!b.dead) b.pull = null; pulls.splice(i, 1); continue; }
+    const ma = a.r ** 3, mb = b.r ** 3, cx = (a.x * ma + b.x * mb) / (ma + mb), cy = (a.y * ma + b.y * mb) / (ma + mb);
+    const k = Math.min(1, 0.07 * dt);
+    a.x += (cx - a.x) * k; a.y += (cy - a.y) * k; b.x += (cx - b.x) * k; b.y += (cy - b.y) * k;
+    if (Math.hypot(a.x - b.x, a.y - b.y) < (a.r + b.r) * 0.4 || a.moving || b.moving) {
+      const [big, small] = a.r >= b.r ? [a, b] : [b, a];
+      big.pull = null; merge(big, small); pulls.splice(i, 1);
+    }
+  }
+}
+function coalesce(maxR) {
+  let big = maxR;
+  for (const d of drops) if (!d.dead && reach(d) > big) big = reach(d);
+  grid.clear(); cell = big * 2 + 2 * S;
+  for (const d of drops) {
+    if (d.dead) continue;
+    const k = ((d.x / cell) | 0) * 4096 + ((d.y / cell) | 0);
+    let arr = grid.get(k); if (!arr) grid.set(k, arr = []); arr.push(d);
+  }
+  for (const d of drops) {
+    if (d.dead) continue;
+    const cx = (d.x / cell) | 0, cy = (d.y / cell) | 0;
+    scan: for (let gx = cx - 1; gx <= cx + 1; gx++) {
+      for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        const arr = grid.get(gx * 4096 + gy);
+        if (!arr) continue;
+        for (const b of arr) {
+          if (b === d || b.dead || d.pull === b || (d.burstId && d.burstId === b.burstId && clock - d.burstAt < 40)) continue;   // a fresh burst's beads fly apart before they can rejoin
+          const gap = Math.hypot(b.x - d.x, b.y - d.y) - reach(d) - reach(b);
+          if (gap >= 1.2 * S) continue;
+          if (d.moving || b.moving) {
+            // the running drop sweeps up what it meets and runs on; between two runners the bigger one carries on
+            if (d.moving && (!b.moving || d.r >= b.r)) merge(d, b);
+            else { merge(b, d); break scan; }
+          } else if (!d.pull && !b.pull) {
+            d.pull = b; b.pull = d; pulls.push([d, b]);
+          }
+        }
+      }
+    }
+  }
+}
+
+// ---------- weather: rain that comes and goes, wind, lightning ----------
+// Smooth, never-repeating swells built from slow incommensurate waves (t is in frames).
+const weather = { t: 0, gust: 1, wind: 0, flash: 0, flashT: 1e9 };
+function stepWeather(dt) {
+  const w = weather; w.t += dt;
+  const t = w.t;
+  const swell = 0.5 + 0.5 * (0.55 * Math.sin(t * 0.0021 + 1.3) + 0.3 * Math.sin(t * 0.0057 + 4.1) + 0.15 * Math.sin(t * 0.017));
+  w.gust = 0.6 + 0.8 * swell ** 1.4;   // the rain thins and thickens over tens of seconds
+  const gusty = Math.max(0, Math.sin(t * 0.0033 + 0.7)) ** 6;   // now and then a gust of wind
+  w.wind = (0.35 * Math.sin(t * 0.0013 + 2.2) + 0.65 * gusty * Math.sin(t * 0.011)) * (0.3 + 0.7 * SL.rain);
+  // lightning in a heavy downpour, a few times a minute at most
+  const storm = Math.max(0, (SL.rain - 0.85) / 0.15);
+  if (storm > 0 && !paused && w.flashT > 240 && rand() < storm * 0.0015 * dt * w.gust) {
+    w.flashT = 0;
+    thunder(1.5 + rand() * 3, 0.5 + rand() * 0.5);
+  }
+  w.flashT += dt;
+  const ft = w.flashT;   // a bright flicker, a dip, a second flash, then fading
+  w.flash = ft > 60 ? 0 : Math.max(Math.exp(-ft * 0.35), 0.75 * Math.exp(-Math.abs(ft - 9) * 0.45), 0.25 * Math.exp(-Math.max(0, ft - 12) * 0.08) * (ft > 12 ? 1 : 0));
+}
+function step(dt) {
+  stepWeather(dt);
+  const fade = Math.pow(1 - condenseRate(), dt);
+  const dry = Math.pow(0.9993, dt);   // wet glass dries over half a minute or so
+  for (let i = 0; i < wg.length; i++) { wg[i] *= fade; wet[i] *= dry; }
+  const { minR, maxR } = radii();
+  const rSlide = holdR();
+  const area = simW * simH / (1280 * 800);
+
+  // rain landing on the pane, with a small splash of satellite droplets
+  // above about 87% on the slider the rain thickens into a downpour: up to 2.5x as many drops at 100%
+  let lambda = P.rain * P.rain * 1.8 * (1 + 1.5 * Math.max(0, (SL.rain - 0.8) / 0.2) ** 1.5) * weather.gust * area * dt;
+  while (lambda > 0) {
+    if (rand() < Math.min(1, lambda)) {
+      const x = rand() * simW, y = rand() * simH * 1.05 - simH * 0.05;
+      // raindrops land at much the same size, a little bigger in heavier rain, with the odd big
+      // one (real rain has a few large drops among the rest); never specks. Larger drops on the
+      // glass grow from these merging where the glass holds them
+      const hv = SL.rain, r = Math.min(bigR(), maxR * (0.32 + 0.1 * hv) * (0.88 + 0.24 * rand()) * (rand() < 0.2 ? 1.75 : 1));
+      // The heavier the rain, the harder each drop hits the glass. A hard hit bursts: it lands
+      // spread wide and ragged, flings a ring of spray well out from the impact, and the jolt
+      // shakes the drops around it, knocking loose any that were close to sliding.
+      const size = Math.min(1, Math.max(0, (r - minR) / (holdR() * 0.8 - minR)));
+      const hit = Math.min(1, (0.6 + 0.4 * SL.rain) * (0.65 + 0.6 * size) * (0.7 + rand() * 0.6));   // a raindrop hits as hard in a shower as in a downpour; heavy rain just brings more, and bigger, drops
+      // A hard hit shatters on impact: in that same instant the drop is a smaller centre and a
+      // ring of beads thrown radially out around it, more and further the harder the hit. Nothing
+      // grows or pulls back; the pieces are simply there and behave as ordinary drops.
+      const burst = hit > 0.72 && drops.length < MAX * 0.6;   // only a hard hit splashes
+      const keep = burst ? 1 - 0.55 * hit : 1, cr = r * Math.cbrt(keep);
+      const d0 = addDrop(x, y, cr, { spread: burst ? 0.04 : 0.08 + rand() * 0.1 });
+      if (d0) { d0.splat = Math.max(d0.splat || 0, burst ? hit * 0.5 : hit * 0.3); d0.jig = 0.02 + 0.04 * hit; d0.jigT = 0; }
+      if (burst) {
+        let vol = r ** 3 - cr ** 3;
+        // a few beads, each a fair share of the water, so a splash never sprays fine dust
+        const want = Math.round(2 + 2 * hit + rand()), a0 = rand() * Math.PI * 2, id = ++burstCount;
+        for (let i = 0; i < want && vol > (0.6 * minR) ** 3; i++) {
+          const pr = Math.cbrt(Math.min(vol, vol / (want - i) * (0.8 + rand() * 0.4)));
+          vol -= pr ** 3;
+          const a = a0 + (i + (rand() - 0.5) * 0.7) * (Math.PI * 2 / want);
+          const downwind = Math.max(0.35, 1 + 0.9 * weather.wind * Math.cos(a));   // with wind, the spray flies further downwind
+          const dist = (cr + pr + 2.5 * S + r * rand() * (0.4 + 0.8 * hit)) * downwind;
+          const p = smallDrop(x + Math.cos(a) * dist, y + Math.sin(a) * dist, pr);
+          if (p) { p.burstId = id; p.burstAt = clock; }
+        }
+      }
+      tap(x, size, hit);
+      if (hit > 0.5) {
+        const R = r * (2 + 3 * hit), rSl = rSlide;
+        for (const o of drops) {
+          if (o.dead || o === d0 || o.moving) continue;
+          const dd = Math.hypot(o.x - x, o.y - y);
+          if (dd > R) continue;
+          const jolt = hit * (1 - dd / R);
+          o.spread = Math.max(o.spread, 0.25 * jolt);
+          const holdO = Math.min(bigR(), rSl * (0.88 + 0.5 * dirtAt(o.x, o.y)) * (o.pin || 1));   // only a drop close to its own limit is shaken loose
+          if (o.r > holdO * 0.92 && rand() < jolt * 0.5) { o.moving = true; o.vy = 0.4 * S; o.trailY = o.y; o.gap = o.r; }
+        }
+      }
+    }
+    lambda -= 1;
+  }
+  // condensation: fine mist that collects between the drops
+  let mist = P.mist * P.mist * 30 * area * dt;
+  while (mist > 0) {
+    if (rand() < Math.min(1, mist)) { const mx = rand() * simW, my = rand() * simH; if (rand() < (0.45 + 0.9 * dirtAt(mx, my)) * (0.4 + 1.2 * P.humid)) {
+      const age = 1 - Math.min(1, wipedAt(mx, my) * 1.4);   // 0 just wiped .. 1 long fogged: condensation matures from micro-mist into beads
+      bead(droplets, mx, my, (0.3 + (0.2 + rand() * rand() * 1.1) * (0.3 + 0.7 * age)) * S, 0.22);   // fine mist, never drop-sized
+    } }
+    mist -= 1;
+  }
+
+  for (const d of drops) {
+    if (d.dead) continue;
+    d.spread *= Math.pow(0.88, dt);
+    if (d.jig) { d.jigT += dt; if (d.jigT > 70) d.jig = 0; }
+    if (d.splat) { d.splat *= Math.pow(0.94, dt); if (d.splat < 0.02) d.splat = 0; }
+    if (!d.moving && d.r < minR) {   // only specks smaller than any raindrop slowly dry off; real drops stay until they merge or run
+      d.r -= 0.003 * S * dt * (1.5 - P.humid);   // dry air evaporates faster
+      if (d.r < 0.5 * S) { d.dead = true; continue; }
+    }
+    if (!d.moving) {
+      // Held by the glass until it holds more than it can carry, then it lets go within moments.
+      if (d.r > Math.min(bigR(), rSlide * (0.88 + 0.5 * dirtAt(d.x, d.y)) * (d.pin || 1)) && rand() < 0.08 * dt / Math.min(2, d.stick)) {   // grimy glass, and a hard-pinned drop, hold much more
+        d.moving = true; d.vy = Math.max(d.vy, 0.2); d.trailY = d.y; d.gap = d.r * (0.8 + rand());
+      }
+    } else {
+      const px = d.x, py = d.y;
+      // Weight grows faster than the grip on the glass, so bigger drops run much faster and
+      // snag less: a heavy drop streaks down, a small one wanders and stalls.
+      // Each drop heads for its own running speed, which climbs steeply with size; heavy drops
+      // get there almost at once and pour down, small ones creep up to a slow crawl.
+      const q = Math.cbrt(d.r ** 3 + (d.extra || 0)) / rSlide, heavy = Math.min(1, Math.max(0, (q - 1) / 0.8));   // by weight, including water it carries beyond its size
+      const onWet = Math.min(1, sampleGrid(wet, d.x, d.y + d.r));   // wet glass is an easier path: faster, fewer snags
+      // running speed in proportion to the drop's volume: twice the water, twice as fast
+      const target = Math.min(60 * S, 1.6 * S * q ** 3 * (0.85 + rand() * 0.3) * (1 + 0.5 * onWet));
+      if (!(d.stuck > 0)) d.vy += (target - d.vy) * Math.min(1, (0.03 + 0.2 * heavy) * dt);
+      // Stick-slip: the glass grips the drop's front edge (more on dry or grimy glass, less on wet)
+      // while its weight pulls it down. Weight grows with volume, grip only with width, so small
+      // runners catch often and long, heavy ones almost never. A caught drop stops and bulges at
+      // the front until its weight tears it free, and it lurches on.
+      const grip = (1 - 0.7 * onWet) * (0.4 + 1.2 * dirtAt(d.x, d.y + d.r));
+      const pull = q * q;   // weight over grip, relative to a drop just big enough to slide
+      if (d.stuck > 0) {
+        d.stuck -= dt; d.vy *= Math.pow(0.4, dt); d.bulge = Math.min(1, (d.bulge || 0) + 0.04 * dt);
+        if (d.stuck <= 0) { d.vy = target * 1.3; d.stuck = 0; }   // breaks free with a lurch
+      } else {
+        d.bulge = Math.max(0, (d.bulge || 0) - 0.08 * dt);
+        if (rand() < 0.02 * dt * grip / (pull * pull)) d.stuck = (10 + rand() * 40) * grip / pull;
+      }
+      // Small drops wander and get drawn toward wet paths; a heavy drop's momentum shrugs off
+      // those small sideways pulls and it runs nearly straight down.
+      const sway = 1 / (1 + 6 * heavy ** 1.2);
+      d.vx += (rand() - 0.5) * 0.35 * S * dt * sway;
+      d.vx += wetPull(d.x, d.y + d.r * 1.5, d.r + 6 * S) * 0.6 * S * dt * sway;   // drawn sideways toward wet trails and streams below
+      d.vx += weather.wind * 0.12 * S * dt * (0.4 + 0.6 * sway);   // pushed by gusts of wind
+      d.vx *= Math.pow(0.86 - 0.2 * heavy, dt);
+      if (d.kick) { d.x += d.kick * dt; d.kick *= Math.pow(0.88, dt); if (Math.abs(d.kick) < 0.01) d.kick = 0; }
+      d.x += d.vx * dt; d.y += d.vy * dt;
+      markWet(d.x, d.y, d.r * 1.2);
+      if (Math.cbrt(d.r ** 3 + (d.extra || 0)) > rSlide * 1.05) {
+        // a big drop leaves a watery trail on the glass behind it that thins and evaporates
+        if (!d.wet) d.wet = [];
+        const last = d.wet[d.wet.length - 1];
+        if (!last || Math.hypot(d.x - last.x, d.y - last.y) > Math.max(3 * S, d.r * 0.5)) d.wet.push({ x: d.x, y: d.y - d.r * 0.4, w: d.r * 0.32, age: 0 });
+      }
+      if (Math.hypot(d.x - px, d.y - py) > d.r * 0.8) {
+        // fast enough to jump past drops between frames: absorb everything along the path
+        const sx = d.x - px, sy = d.y - py, sl = sx * sx + sy * sy;
+        for (const b of drops) {
+          if (b === d || b.dead || b.y < py - b.r - d.r || b.y > d.y + b.r + d.r) continue;
+          const t = Math.max(0, Math.min(1, ((b.x - px) * sx + (b.y - py) * sy) / sl));
+          const ex = b.x - (px + sx * t), ey = b.y - (py + sy * t), rr = (d.r + b.r) * 0.95;
+          if (ex * ex + ey * ey < rr * rr) { const keepY = d.y, keepX = d.x; merge(d, b); d.x = keepX; d.y = keepY; }
+        }
+      }
+      // leave a beaded trail behind, losing a little water each time
+      if (d.y - d.trailY > d.gap && d.r > minR * 1.4) {
+        const tr = d.r * (0.16 + rand() * 0.22);
+        smallDrop(d.x + (rand() - 0.5) * d.r * 0.4, d.y - d.r * (1.1 + Math.min(1, d.vy / (3 * S)) * 1.4) - tr, tr);
+        d.r = Math.sqrt(Math.max(minR * minR, d.r * d.r - tr * tr * 0.5));
+        d.trailY = d.y; d.gap = d.r * (4 + rand() * 8);
+      }
+      // A running drop wets the glass behind it and loses a little of its water the further it goes,
+      // in proportion to what it carries, so it thins gradually and never shrinks away to nothing
+      // mid-run. Without more water arriving from above it slows and comes to rest.
+      // a big drop that lets go draws out into a narrower running drop, gradually, its water
+      // carried along as weight
+      const mR = maxDropR();
+      if (d.r > mR) { const ex = (d.r ** 3 - mR ** 3) * Math.min(1, 0.03 * dt); d.r = Math.cbrt(d.r ** 3 - ex); d.extra = (d.extra || 0) + ex; }
+      const ds = Math.hypot(d.x - px, d.y - py);
+      if (ds > 0) {
+        let loss = (d.r ** 3 + (d.extra || 0) * 0.3) * ds / (simH * 2.5);
+        if (d.extra > 0) { const take = Math.min(d.extra, loss); d.extra -= take; loss -= take; }   // sheds its extra weight first
+        if (loss > 0) d.r = Math.cbrt(Math.max(radii().minR ** 3, d.r ** 3 - loss));
+      }
+      // Along its way the drop sheds tiny droplets at random: specks left where the film behind
+      // it breaks up, scattered across the width of its track.
+      d.dotAcc = (d.dotAcc || 0) + ds;
+      if (d.dotGap == null) d.dotGap = (6 + rand() * 10) * S;
+      while (d.dotAcc > d.dotGap) {
+        d.dotAcc -= d.dotGap; d.dotGap = (6 + rand() * 10) * S;
+        const t = rand(), side = (rand() - 0.5) * d.r * 0.4;   // close to the centre of the track
+        const rr = (0.45 + rand() * rand() * 1.1) * S * (0.8 + 0.3 * Math.min(2, d.r / rSlide));
+        bead(beads, px + (d.x - px) * t + side, py + (d.y - py) * t - d.r * (0.6 + rand() * 0.6), rr, 0.15);
+      }
+      if (d.r < rSlide * 0.75 && d.vy < 0.4 * S) { d.moving = false; reshape(d); }
+      else if (d.r < rSlide * 0.75) d.vy *= Math.pow(0.85, dt);   // too little water left to keep going
+
+      // wipe mist and fog along the path
+      const len = Math.hypot(d.x - px, d.y - py), steps = Math.ceil(len / (d.r * 0.4));
+      for (let s = 1; s <= steps; s++) { const t = s / steps; eraseAt(px + (d.x - px) * t, py + (d.y - py) * t, d.r * 0.92); }
+      if (d.y + d.r > simH - sillThick(d.x) && d.y < simH + d.r) { addToSill(d.x, d.r ** 3); d.dead = true; }   // reaches the water along the bottom edge
+      else if (d.y - d.r * 2 > simH || d.x < -d.r * 2 || d.x > simW + d.r * 2) d.dead = true;
+      else if (SL.rain > 0.7 && (d.extra || 0) > maxDropR() ** 3 * 1.5 && d.vy > 2 * S && rivulets.length < 30 && rivulets.filter((r) => !r.fed && !r.orphan).length < 6) {   // only a really big gathering of water opens a channel
+        // In heavy rain, enough water in one running drop keeps a channel open: it becomes a stream
+        // from here, running until its own water is spent unless more arrives to feed it. In
+        // lighter rain it simply runs on as a drop, carrying its water down the pane.
+        const vol = (d.r ** 3 + d.extra) / maxR ** 3;
+        const rv = newRivulet(d.x, d.y - d.r, { w: holdR() * 0.8, hg: d.r / (holdR() * 0.8), flow: 1, stopAt: d.y + simH * Math.min(1.2, 0.12 * vol) * (0.7 + rand() * 0.6) });
+        rv.vol0 = d.r ** 3 + d.extra;   // the water it set out with, handed back if it never gets going
+        rivulets.push(rv);
+        d.dead = true;
+      }
+    }
+    if (d.dead) continue;
+    if (d.wet) {
+      const life = 60 + 90 * Math.min(1.5, Math.max(0, Math.cbrt(d.r ** 3 + (d.extra || 0)) / rSlide - 1));
+      for (const p of d.wet) {
+        p.age += dt;
+        // stretched thin, the trail can't stay a film: it pinches off into a line of little beads
+        if (!p.broke && p.age > life * (0.3 + 0.25 * ((p.x * 0.37 + p.y * 0.11) % 1))) {
+          p.broke = true;   // one bead per stretch, on the line of the track: a perforated line
+          if (rand() < 0.8) bead(beads, p.x + (rand() - 0.5) * p.w * 0.3, p.y + (rand() - 0.5) * p.w * 0.4, p.w * (0.45 + rand() * 0.2), 0.08);
+        }
+      }
+      while (d.wet.length && (d.wet[0].age > life || d.wet[0].broke)) d.wet.shift();
+      d.wetLife = life;
+    }
+    eraseAt(d.x, d.y - d.r * 0.2, d.r * 0.85);
+  }
+  stepPulls(dt);
+  stepSill(dt);
+  coalesce(maxR);
+  stepRivulets(dt);
+  let j = 0;
+  for (let i = 0; i < drops.length; i++) if (!drops[i].dead) drops[j++] = drops[i];
+  drops.length = j;
+}
+
+function buildDropQuads() {
+  const { minR, maxR } = radii(), rSlide = holdR();
+  for (const d of drops) {
+    if (d.wet && d.wet.length > 1) {
+      for (let i = 1; i < d.wet.length; i++) {
+        const a = d.wet[i - 1], b = d.wet[i], f = 1 - b.age / d.wetLife;
+        if (f <= 0.02 || a.broke || b.broke) continue;   // already broken up into beads
+        tails.push(b.x, b.y, Math.max(0.4, b.w * f), Math.max(0.4, a.w * (1 - a.age / d.wetLife)), Math.hypot(a.x - b.x, a.y - b.y), Math.atan2(a.x - b.x, b.y - a.y), 0.75 * f, 1);
+      }
+    }
+    if (d.wet && d.wet.length && !d.dead) {
+      // join the newest piece of trail to the drop itself, so tail and trail are one body of water
+      const a = d.wet[d.wet.length - 1], bx = d.x, by = d.y - d.r * 0.2, len = Math.hypot(a.x - bx, a.y - by);
+      if (len > 0.5) tails.push(bx, by, Math.max(0.4, d.r * 0.36), Math.max(0.4, a.w * (1 - a.age / d.wetLife)), len, Math.atan2(a.x - bx, by - a.y), 0.8, 1);
+    }
+    const sp = 1 + d.spread;
+    if (d.moving) {
+      // one body: a full round bottom carrying the weight, a slightly narrower top, leaning with the run
+      const st = Math.min(1.6, d.vy / (3 * S));
+      const ang = -Math.atan2(d.vx, Math.max(0.3, d.vy)) * 0.8;
+      const bl = d.bulge || 0;   // caught: water piles up at the front edge
+      dropQuads.push(d.x, d.y + d.r * 0.15 * bl, d.r * sp * (1 + 0.12 * bl), d.r * (0.82 - 0.12 * bl), d.r * (0.3 + 0.5 * st + 0.5 * bl), ang, 0.03 + 0.05 * Math.min(1, Math.max(0, d.r / rSlide - 1)), d.seed);
+      const big = Math.min(1.5, Math.max(0, Math.cbrt(d.r ** 3 + (d.extra || 0)) / rSlide - 1));   // heavier drops drag a longer tail
+      tails.push(d.x, d.y, d.r * sp * 0.95, d.r * 0.24, d.r * (1.2 + 2.2 * st) * (1 + 1.6 * big), ang, 0, 0);   // as wide as the drop where it starts, tapering into its wet track
+      if (d.vy > 4 * S) tails.push(d.x, d.y, d.r * 0.9, d.r * 0.8, Math.min(d.vy * 1.5, d.r * 4), ang, Math.min(0.6, d.vy / (25 * S)), 1);   // a fast drop smears along its path
+    } else {
+      // Small drops are domes held round by surface tension; as they grow, gravity wins more and
+      // more (it scales with size squared), flattening the top and fattening the bottom.
+      const g = Math.min(1, (d.r / rSlide) ** 2) * (0.85 + 0.3 * d.sag);
+      // a damped wobble after an impact or merge: wider, then taller, then wider again, settling
+      const jg = d.jig ? d.jig * Math.min(1, d.r / rSlide) * Math.exp(-d.jigT * 0.16) * Math.cos(d.jigT * 1.1) : 0;   // surface tension holds tiny drops almost still
+      const bigS = Math.min(1, Math.max(0, d.r / (rSlide * 0.7) - 0.6));   // big drops: thin top, full bottom, wavier edge
+      dropQuads.push(d.x, d.y, d.r * sp * (1 + jg), d.r * sp * (0.9 - 0.2 * g - 0.12 * bigS) * (1 + jg * 0.6), Math.max(0, d.r * (0.1 + 0.55 * g + 0.15 * bigS) - d.r * jg * 1.6), d.tilt, d.wob * (1 + 0.8 * bigS) + (d.splat || 0) * 0.2, d.seed);   // a fresh splat is a little ragged
+    }
+  }
+  for (const rv of rivulets) {
+    const pts = rv.pts, n = pts.length, wd = streamWidth(rv);
+    // the water in the channel, drawn as smooth runs between wiped gaps
+    let run = [];
+    for (let j = 0; j <= n; j++) {
+      if (j < n && pts[j].on) { const r = streamR(rv, pts[j]); run.push({ x: pts[j].x + r * bankShift(rv, pts[j].y), y: pts[j].y, r }); continue; }
+      if (run.length > 1) drawStreamRun(run);
+      run = [];
+    }
+    for (let j = 1; j < n; j++) {
+      const a = pts[j - 1], b = pts[j];
+      if (!a.on || !b.on) continue;
+      // the edges catch on the glass here and there, each side on its own: small irregular bumps
+      const hb = ((Math.sin(j * 12.9898 + rv.phase * 78.233) * 43758.5453) % 1 + 1) % 1;
+      if (hb < 0.07) {
+        const rb = streamR(rv, b), sl = Math.hypot(a.x - b.x, a.y - b.y) || 1, side = hb < 0.035 ? 1 : -1;
+        const px = -(a.y - b.y) / sl * side, py = (a.x - b.x) / sl * side, br = rb * (0.3 + hb * 3);
+        streams.push(b.x + px * rb * 0.6, b.y + py * rb * 0.6, br, br * 0.8, 3 * S, Math.atan2(a.x - b.x, b.y - a.y), 0, 3);
+      }
+    }
+    // the head: a rounded bead of water leading the channel. Its size eases, so it never pops.
+    const g = rv.carving || rv.stalled ? (rv.pauseT > 0 ? 1.9 + 0.9 * (1 - rv.pauseT / rv.pauseLen) : rv.stalled ? 1.5 : 1.9) : 0;   // a waiting tip is a smaller, rounded end; a pausing one swells
+    rv.hg = rv.hg == null ? g : rv.hg + (g - rv.hg) * 0.08;
+    if (n && rv.hg > 0.6) {
+      const h = pts[n - 1];
+      dropQuads.push(h.x, h.y, wd * rv.hg, wd * Math.min(1.3, rv.hg * 0.7), wd * 2, 0, 0.04, rv.phase);
+    }
+    if (rv.pool && rv.pool.dir) edgeFilm(rv.pool.x, rv.pool.y, rv.pool.up, rv.pool.down, rv.pool.th, rv.ph, rv.pool.dir);
+    if (rv.spill) {
+      const sp = rv.spill;   // the film draining into the new channel
+      edgeFilm(sp.x, sp.y, sp.up * sp.t, sp.down * (0.5 + 0.5 * sp.t), sp.th * sp.t, rv.ph, sp.dir);
+    }
+  }
+  // the ridge of water gathered along the bottom edge
+  for (let i = 0; i + 1 < sill.length; i++) {
+    const ta = sillThick(i * WG), tb = sillThick((i + 1) * WG);
+    if (ta < 0.6 && tb < 0.6) continue;
+    streams.push(i * WG, simH - ta * 0.35, Math.max(0.4, ta), Math.max(0.4, tb), WG, Math.PI / 2, 0, (ta < 0.6 ? 1 : 0) | (tb < 0.6 ? 2 : 0));
+  }
+}
+
+// ---------- streams: in heavy rain, water finds channels and keeps running ----------
+const rivulets = [];
+let clock = 0;
+// How much a passing surge of water swells the channel, and how long a stretch it covers.
+const SURGE_AMP = [0.3, 0.6], SURGE_LEN = [0.04, 0.09];
+
+function newRivulet(x0, y0, o = {}) {
+  return {
+    pts: [], y0, x: x0, vx: 0, phase: rand() * 100,
+    ph: o.ph || [rand() * 6.283, rand() * 6.283, rand() * 6.283],
+    stopAt: o.stopAt ?? Infinity, speed: (2.5 + rand() * 4) * S, w: o.w ?? holdR() * (0.7 + rand() * 0.2), flow: o.flow ?? 1,   // about as wide as the heaviest drop the glass holds: that is the water that runs down
+    surges: [], front: -1, carving: false, stalled: false, burst: 0, joined: null, joins: [], pool: null, spill: null, orphan: !!o.orphan,
+    fw: o.fw ?? o.flow ?? 1, hg: o.hg ?? null,
+    // each stream its own character: how far it sways, how often it snags, how much water it carries
+    wander: 0.4 + rand() * 1.2, snag: 0.5 + rand() * 1.3, base: 0.22 + rand() * 0.55,
+    // fed from the top of the pane (or from a stream that is); one opened by a drop or a wipe
+    // runs on its own water for a little while, then drains
+    fed: o.fed ?? y0 < 0, holdT: 60 + rand() * 150,
+  };
+}
+function spawnRivulet() {
+  const stopAt = rand() < 0.12 ? simH * (0.35 + rand() * 0.5) : Infinity;   // now and then the water runs out
+  rivulets.push(newRivulet(rand() * simW, -6, { stopAt }));
+}
+// how wide the water runs: close to the width of the drop that feeds it, a little more with more
+// water flowing, eased so a stream never jumps in width
+const streamWidth = (rv) => rv.w * (0.7 + 0.3 * Math.sqrt(Math.min(2, rv.fw)));
+// Channel width along its length: nearly even, the way the pinned edges of a rivulet hold it,
+// with slow irregular variation. It swells where the path kinks and bends (see evolveChannel),
+// not in a row of beads.
+// smooth 1D value noise, 0..1
+function vn1(x, seed) {
+  const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f);
+  const h = (n) => { const v = Math.sin((n + seed * 57.13) * 127.1) * 43758.5453; return v - Math.floor(v); };
+  return h(i) + (h(i + 1) - h(i)) * u;
+}
+function channelWidth(rv, y) {
+  const [a, b, c] = rv.ph;
+  // contact-line pinning: the banks catch on the glass and let go, so the width wanders
+  // irregularly along the channel, with the odd narrow neck and the odd swell
+  const n = 0.55 * vn1(y * 0.012, a) + 0.3 * vn1(y * 0.035, b) + 0.15 * vn1(y * 0.09, c);
+  return 0.45 + 1.1 * n;
+}
+// The two banks don't mirror each other: each pins in its own places, so the water's middle
+// drifts a little from side to side of the channel line (as a share of its half-width).
+const bankShift = (rv, y) => (vn1(y * 0.021, rv.ph[2] + 3.1) - 0.5) * 0.6 + (vn1(y * 0.06, rv.ph[0] + 7.7) - 0.5) * 0.25;
+// Half-width of a stream's water at channel point p: its channel, the streams that joined it
+// above, a passing surge, and the way water drains down the channel, a little thinner near the
+// top and fuller lower down. Never thinner than a thread of water can stay whole on glass.
+// About a running drop's width at most: past that the extra water just runs off faster, so the
+// width levels off softly. Where the banks pinch in it can thin to a thread.
+const minStreamR = () => 0.9 * S;
+const maxStreamR = () => holdR() * 1.15;
+function streamR(rv, p) {
+  const pts = rv.pts, y0 = pts[0].y, span = Math.max(1, pts[pts.length - 1].y - y0);
+  const u = Math.min(1, Math.max(0, (p.y - y0) / span));
+  const r = (streamWidth(rv) * p.k + joinAdd(rv, p.y)) * surgeAt(rv, p.y) * (0.8 + 0.38 * Math.pow(u, 0.8));
+  const top = maxStreamR(), knee = top * 0.75;
+  let w = r < knee ? r : knee + (top - knee) * Math.tanh((r - knee) / (top - knee));
+  // draining from the top: the tail thins out to a thread as the water runs off, never a cut end
+  if (rv.drainY != null) w *= 0.25 + 0.75 * Math.min(1, Math.max(0, (p.y - rv.drainY) / (60 * S)));
+  return Math.max(minStreamR(), w);
+}
+// Draw a run of channel points as one smooth body of water: corners are rounded by inserting
+// midpoints on a smooth curve, and each piece is cut where it meets the next along the line
+// halving the angle between them (packed into p1 for the shader), so the pieces fit seamlessly.
+function drawStreamRun(run, out = streams) {
+  const n = run.length, P = [];
+  for (let i = 0; i < n; i++) {
+    P.push(run[i]);
+    if (i + 1 < n) {
+      const p0 = run[Math.max(0, i - 1)], p1 = run[i], p2 = run[i + 1], p3 = run[Math.min(n - 1, i + 2)];
+      P.push({ x: (9 * (p1.x + p2.x) - p0.x - p3.x) / 16, y: (p1.y + p2.y) / 2, r: (p1.r + p2.r) / 2 });
+    }
+  }
+  const q = (m) => Math.round(Math.max(-1, Math.min(1, m)) * 511) + 512;
+  for (let i = 0; i + 1 < P.length; i++) {
+    const A = P[i], B = P[i + 1], len = Math.hypot(A.x - B.x, A.y - B.y);
+    if (len < 0.01) continue;
+    const th = Math.atan2(A.x - B.x, B.y - A.y), c = Math.cos(th), s = Math.sin(th);   // (s, -c) points from B up to A
+    let caps = 0, qa = 0, qb = 0;
+    if (i + 2 < P.length) {
+      const C = P[i + 2], l = Math.hypot(B.x - C.x, B.y - C.y) || 1;
+      const nx = s + (B.x - C.x) / l, ny = -c + (B.y - C.y) / l, nl = Math.hypot(nx, ny) || 1;
+      qb = q((nx * c + ny * s) / nl);
+    } else caps |= 1;
+    if (i > 0) {
+      const Z = P[i - 1], l = Math.hypot(Z.x - A.x, Z.y - A.y) || 1;
+      const nx = s + (Z.x - A.x) / l, ny = -c + (Z.y - A.y) / l, nl = Math.hypot(nx, ny) || 1;
+      qa = q((nx * c + ny * s) / nl);
+    } else caps |= 2;
+    out.push(B.x, B.y, B.r, A.r, len, th, 0, caps + 4 * (qb + 1024 * qa));
+  }
+}
+function addSurge(rv, y, extra = 0) {
+  rv.surges.push({
+    y, len: simH * (SURGE_LEN[0] + rand() * (SURGE_LEN[1] - SURGE_LEN[0])),
+    amp: SURGE_AMP[0] + rand() * (SURGE_AMP[1] - SURGE_AMP[0]) + extra, speed: (12 + rand() * 16) * S, age: 0,
+  });
+}
+// A surge swells a stretch of the channel smoothly, peaking in its middle.
+function surgeAt(rv, y) {
+  let k = 0;
+  for (const sg of rv.surges) {
+    const u = (y - sg.y) / sg.len;
+    if (u > -0.5 && u < 0.5) k += sg.amp * Math.min(1, sg.age / 6) * Math.cos(u * Math.PI) ** 2;   // a pulse of water swells the channel at once
+  }
+  return 1 + 0.45 * Math.tanh(k / 0.6);   // surges that overlap don't stack without limit
+}
+// The channel point of stream o at height y, if it reaches that far.
+// Points run top to bottom (y never decreases), but are not evenly spaced where a stream bends
+// along a wiped edge, so look them up by height.
+function idxAtY(pts, y) {
+  let lo = 0, hi = pts.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (pts[m].y < y) lo = m + 1; else hi = m; }
+  return lo;
+}
+function pointAt(o, y) {
+  const q = o.pts[idxAtY(o.pts, y - 1.5)];
+  return q && Math.abs(q.y - y) <= 3 ? q : null;
+}
+// Extra width below each point where another stream has run into this one.
+function joinAdd(rv, y) {
+  let add = 0;
+  for (const j of rv.joins) if (y > j.y) add += j.add * (j.t ?? 1) * Math.min(1, (y - j.y) / 24);
+  if (rv.adds) for (const a of rv.adds) if (y > a.y) add += a.add * a.t * a.life * Math.min(1, (y - a.y) / 24);   // water from drops it took in
+  return add;
+}
+// Does drop d touch the water of the stream anywhere along its height (within a pixel)?
+// A running drop is checked along its whole body, not just its round bottom.
+function touches(rv, d, reachY) {
+  const pts = rv.pts, L = d.moving ? d.r * 1.2 : 0, rd = d.r * (1 + (d.spread || 0)) + 1;
+  if (!pts.length || d.y + d.r < pts[0].y || d.y - L - d.r > reachY || d.x + rd < rv.bx0 || d.x - rd > rv.bx1) return false;
+  for (let j = idxAtY(pts, d.y - L - rd - 14 * S); j < pts.length && pts[j].y <= d.y + rd + 14 * S; j++) {
+    const p = pts[j];
+    if (!p.on || p.y > reachY) continue;
+    const dx = d.x - p.x, dy = p.y > d.y ? p.y - d.y : p.y < d.y - L ? d.y - L - p.y : 0, rr = rd + streamR(rv, p);
+    if (dx * dx + dy * dy < rr * rr) return true;
+  }
+  return false;
+}
+// Water held at a wiped edge is a thin film lying along the edge just below it. Gravity pulls it
+// mostly toward the lower end of the edge, where it gathers a little thicker.
+// t = unit direction along the edge, pointing downhill; up/down = how far it reaches each way.
+function edgeFilm(cx, cy, up, down, th, ph, t) {
+  let nx = -t.y, ny = t.x;
+  if (ny < 0) { nx = -nx; ny = -ny; }
+  const L = up + down, ang = Math.atan2(t.x, -t.y);
+  const thick = (u) => {
+    const v = (u + up) / L;
+    return Math.max(0.4, th * Math.sqrt(Math.max(0, 1 - (2 * v - 1) ** 2)) * (0.7 + 0.5 * v) * (0.8 + 0.2 * Math.sin(u * 0.09 + ph[0]) * Math.sin(u * 0.041 + ph[1])));
+  };
+  const ox = cx + nx * th * 0.5, oy = cy + ny * th * 0.5;
+  for (let u = -up; u < down; u += 3) {
+    streams.push(ox + t.x * u, oy + t.y * u, thick(u), thick(u + 3), 3, ang, 0, (u === -up ? 1 : 0) | (u + 3 >= down ? 2 : 0));
+  }
+}
+// The wipe's direction where it cut a stream, turned to point downhill along the edge.
+function downhill(dir) {
+  let x = dir ? dir.x : 1, y = dir ? dir.y : 0;
+  if (y < 0 || (y === 0 && rand() < 0.5)) { x = -x; y = -y; }
+  y = Math.max(y, 0.08);
+  const l = Math.hypot(x, y);
+  return { x: x / l, y: y / l };
+}
+
+// A drop that touches a stream joins it: its water swells the channel where it joined, toward the
+// side it came from, then runs down as a surge, and the stream below carries a little more water
+// for a while. All in proportion to the drop's volume.
+function absorbDrop(rv, d, maxR) {
+  const pts = rv.pts, vol = Math.min(2, (d.r / maxR) ** 3), wd = streamWidth(rv);
+  const reach = d.r * 2.5 + 6 * S, bump = Math.min(0.6, 0.25 * Math.pow(d.r / Math.max(1, wd), 1.5));
+  for (let j = idxAtY(pts, d.y - reach); j < pts.length && pts[j].y < d.y + reach; j++) {
+    const p = pts[j];
+    if (!p.on) continue;
+    const u = Math.cos((p.y - d.y) / reach * Math.PI / 2) ** 2;
+    p.k = Math.min(2.2, p.k + bump * u);
+    p.x += Math.max(-1, Math.min(1, (d.x - p.x) * 0.15)) * u;
+  }
+  limitSlope(pts, idxAtY(pts, d.y - reach - 3), idxAtY(pts, d.y + reach + 3));
+  if (d.r > maxR * 0.3) addSurge(rv, d.y, Math.min(0.15, d.r / maxR * 0.12));   // a sizeable drop sends a surge down
+  rv.flow = Math.min(1.1, rv.flow + 0.02 * vol);
+  const adds = rv.adds || (rv.adds = []), held = adds.reduce((sum, a) => sum + a.add * a.life, 0), room = wd * 0.6 - held;
+  if (room > 0) {
+    const more = Math.min(room, wd * Math.min(0.35, 0.15 * Math.sqrt(vol))), near = adds.find((a) => Math.abs(a.y - d.y) < 24 * S);
+    if (near) { near.add = near.add * near.life + more; near.life = 1; near.y = Math.min(near.y, d.y); }   // water joining close by adds up in one place
+    else adds.push({ y: d.y, add: more, t: 0, life: 1 });
+  }
+}
+// No stretch of a channel may run more sideways than ~35° off vertical: gravity won't let it.
+function limitSlope(pts, j0, j1) {
+  for (let pass = 0; pass < 2; pass++) {
+    for (let j = Math.max(1, j0); j < Math.min(pts.length, j1 + 1); j++) {
+      const a = pts[j - 1], b = pts[j];
+      if (!a.on || !b.on) continue;
+      const dx = b.x - a.x, ex = Math.abs(dx) - 0.7 * Math.max(0, b.y - a.y);
+      if (ex > 0) { const m = Math.sign(dx) * ex / 2; b.x -= m; a.x += m; }
+    }
+  }
+}
+// Streams that touch anywhere along their length (within a pixel) become one thicker stream from
+// that point down: the narrower one ends at the touch and its water carries on in the other.
+// Below the touch, whatever of its channel still runs alongside the other is part of it now; the
+// rest is cut off from its water and drains away into beads.
+function cutSide(side, main, k) {
+  const pts = side.pts;
+  let m = k + 1;
+  while (m < pts.length) {
+    const p = pts[m], q = pointAt(main, p.y);
+    if (!p.on || !q || !q.on || Math.abs(q.x - p.x) >= streamR(main, q) + streamR(side, p) + 1) break;
+    m++;
+  }
+  const rest = pts.slice(m);
+  pts.length = Math.min(pts.length, k + 1);
+  if (rest.length > 2 && rest.some((p) => p.on)) {
+    const o = newRivulet(0, 0, { orphan: true, flow: side.flow, fw: side.fw, w: side.w, ph: side.ph });
+    o.pts = rest; o.draining = true; o.hg = 0;
+    rivulets.push(o);
+  }
+}
+let mergeAcc = 0;
+function mergeTouchingStreams() {
+  const live = rivulets.filter((r) => !r.joined && r.pts.length > 2);
+  for (let i = 0; i < live.length; i++) {
+    for (let j = i + 1; j < live.length; j++) {
+      const A = live[i], B = live[j];
+      if (A.joined || B.joined || (A.orphan && B.orphan) || A.pts.length < 3 || B.pts.length < 3) continue;
+      const y0 = Math.max(A.pts[0].y, B.pts[0].y, A.noMergeAbove || -1e9, B.noMergeAbove || -1e9), y1 = Math.min(A.pts[A.pts.length - 1].y, B.pts[B.pts.length - 1].y);
+      if (y1 <= y0) continue;
+      for (let y = y0; y <= y1; y += 3) {
+        const a = pointAt(A, y), b = pointAt(B, y);
+        if (!a || !b || !a.on || !b.on || Math.abs(a.x - b.x) >= streamR(A, a) + streamR(B, b) + 1) continue;
+        // the one carrying more water takes the other in; a cut-off piece never takes in a fed stream
+        const [main, side] = A.orphan ? [B, A] : B.orphan ? [A, B] : A.w * A.fw >= B.w * B.fw ? [A, B] : [B, A];
+        cutSide(side, main, idxAtY(side.pts, y));
+        if (!side.orphan) {
+          const end = side.pts[side.pts.length - 1];
+          side.x = end.x; side.joined = main; side.carving = false; side.stopAt = Infinity; side.pool = null;
+          main.joins = main.joins.filter((jn) => jn.from !== side);
+          main.joins.push({ y: end.y, add: side.w * 0.55, from: side, t: 0 });
+          main.flow = Math.min(1.1, main.flow + 0.2);
+        }
+        break;
+      }
+    }
+  }
+}
+
+// A stream cut off from the water above drains: its top end runs down the channel, and the
+// thread of water it leaves behind is too thin to hold together, so it pinches off into a line of
+// beads rather than thinning away. Returns true once it has all drained.
+// The water never just goes: what drains out of the top runs down the channel (as pulses you can
+// see) and gathers at its lower end, which ends as a drop that drips on, or runs into the water
+// along the bottom of the pane.
+function drainEnd(rv) {
+  const pts = rv.pts;
+  const end = pts.length ? pts[pts.length - 1] : { x: rv.x, y: rv.y0, on: true, none: true };
+  if (!end.on) return;
+  const vol = (rv.drainVol || 0) + (end.none ? rv.vol0 || holdR() ** 3 : streamR(rv, end) ** 3);
+  if (end.y >= simH - 4) { addToSill(end.x, vol); return; }
+  const rS = holdR(), r = Math.min(maxDropR(), Math.cbrt(vol));
+  const d = addDrop(end.x, end.y, Math.max(radii().minR * 1.2, r), { stick: 1 });
+  if (!d) return;
+  d.extra = (d.extra || 0) + Math.max(0, vol - d.r ** 3);
+  if (!d.moving && (d.r > rS * 0.9 || d.extra > 0)) { d.moving = true; d.vy = Math.max(d.vy, 0.5 * S); d.trailY = d.y; d.gap = d.r; }
+}
+function drainStream(rv, dt) {
+  const pts = rv.pts;
+  if (pts.length < 2) { drainEnd(rv); return true; }
+  rv.drainV = Math.min(1.5 * S, (rv.drainV ?? (0.12 + rand() * 0.2) * S) * Math.pow(1.002, dt));   // it drains slowly, a little faster as it goes
+  rv.drainY = Math.max(rv.drainY ?? -Infinity, pts[0].y) + rv.drainV * dt;
+  let k = 0;
+  while (k < pts.length - 1 && pts[k].y < rv.drainY) {
+    const p = pts[k];
+    if (p.on) {
+      const r = streamR(rv, p);
+      rv.beadAcc = (rv.beadAcc || 0) + 3;
+      if (rv.beadGap == null) rv.beadGap = r * (2 + rand() * 4);
+      let left = 0;
+      if (rv.beadAcc >= rv.beadGap) {
+        rv.beadAcc = 0; rv.beadGap = r * (4 + rand() * 7);
+        const br = Math.min(holdR() * 0.6, r * (0.9 + rand() * 0.6));
+        smallDrop(p.x + (rand() - 0.5) * r * 0.6, p.y, br); left = br ** 3;   // a few beads stay behind on the track
+      }
+      rv.drainVol = (rv.drainVol || 0) + Math.max(0, r * r * 3 * 0.5 - left);   // the rest runs on down
+      markWet(p.x, p.y, r * 2);
+    }
+    k++;
+  }
+  if (k) {
+    pts.splice(0, k);
+    rv.pulseAcc = (rv.pulseAcc || 0) + k;
+    if (rv.pulseAcc > 12 && pts.length) { rv.pulseAcc = 0; addSurge(rv, pts[0].y); }   // the draining water runs down in pulses
+  }
+  if (pts.length < 2) { drainEnd(rv); return true; }
+  return false;
+}
+
+let wetAcc = 0;
+// River physics on the glass. Water swinging round a bend presses on the outer bank; where that
+// beats the grip of the glass the edge gives way, so bends and kinks grow outward and the channel
+// widens there, while the inside bank is left behind. Gravity pulls straight down: a stretch that
+// leans past ~30° sags back toward vertical, and the water slows and pools wider along it.
+// Elsewhere the pinned edges hold the path where it is, apart from viscosity rounding off the
+// sharpest corners. Everything scales with how much water is flowing.
+function evolveChannel(rv, n, dt) {
+  const pts = rv.pts, fl = Math.min(1.2, rv.flow), wd = streamWidth(rv), t = Math.min(2, dt);
+  const W = Math.max(5, Math.min(12, Math.round(wd * 1.6)));   // a bend spans a few widths; finer kinks keep the shape they were carved with
+  if (n < 4 * W) return;
+  // the path smoothed over a bend's length, and how far each stretch of it bulges off its chord
+  const cs = new Float64Array(n + 1), box = (arr, j) => { const lo = Math.max(0, j - W), hi = Math.min(n - 1, j + W); return (arr[hi + 1] - arr[lo]) / (hi - lo + 1); };
+  for (let j = 0; j < n; j++) cs[j + 1] = cs[j] + pts[j].x;
+  const xs = new Float32Array(n), dev = new Float32Array(n), ps = new Float64Array(n + 1);
+  for (let j = 0; j < n; j++) xs[j] = box(cs, j);
+  for (let j = W; j < n - W; j++) dev[j] = xs[j] - (xs[j - W] + xs[j + W]) / 2;
+  // the outer bank gives way once the water's push beats the grip of the glass; the whole bend moves out together
+  for (let j = 0; j < n; j++) ps[j + 1] = ps[j] + Math.sign(dev[j]) * Math.max(0, Math.abs(dev[j]) - wd * 0.5);
+  const room = rv.w * 1.2;   // how far a bend can wander from where it was carved
+  const shift = new Float32Array(n);
+  for (let j = 1; j < n - 1; j++) {
+    const a = pts[j - 1], b = pts[j], c = pts[j + 1];
+    if (!a.on || !b.on || !c.on) continue;
+    // like a river: each pulse of water that passes cuts the outer bank of a bend further and
+    // scours the channel wider, so heavy-running stretches grow their meanders
+    const sf = surgeAt(rv, b.y) - 1;
+    let g = box(ps, j) * 0.0018 * fl * t * (1 + 5 * sf);
+    const off = b.x - (b.x0 ?? b.x);
+    if (g * off > 0) g *= Math.max(0, 1 - Math.abs(off) / room);
+    shift[j] = g;
+    // viscosity rounds any corner tighter than the water can follow (about 1.5 widths), and
+    // gravity keeps easing a stretch that leans far off vertical back down
+    const tx = c.x - a.x, tilt = Math.abs(tx) / (Math.hypot(tx, c.y - a.y) || 1), sag = Math.min(1, Math.max(0, tilt - 0.35) / 0.22);
+    const lap = (a.x + c.x) / 2 - b.x, ex = Math.abs(lap) - 3 / Math.max(minStreamR(), wd * b.k);
+    if (ex > 0) shift[j] += Math.sign(lap) * ex * 0.2 * t;
+    shift[j] += lap * 0.03 * sag * fl * t;
+    // wider round the outside of bends and where the water runs across the slope; the inside of
+    // bends and straight runs slowly fill back in toward the channel's own width
+    const bend = Math.min(1, Math.abs(dev[j]) / (wd * 1.2)), kt = (b.k0 || 1) * (1 + 0.5 * bend + 0.5 * sag) * (1 + 0.5 * sf);
+    b.k += (kt - b.k) * (kt > b.k ? 0.004 * fl * (1 + 6 * sf) : 0.0015) * t;
+  }
+  for (let j = 1; j < n - 1; j++) pts[j].x += shift[j];
+  // and however the channel shifts, no stretch of it ever runs more sideways than ~35° off vertical
+  limitSlope(pts, 1, n - 1);
+  // the moving water keeps its path clear and wet
+  rv.erodeAcc = (rv.erodeAcc || 0) + dt;
+  if (rv.erodeAcc > 20) {
+    rv.erodeAcc = 0;
+    for (let j = 0; j < n; j += 3) if (pts[j].on) { eraseAt(pts[j].x, pts[j].y, rv.w * 1.5); markWet(pts[j].x, pts[j].y, rv.w * 1.8); }
+  }
+}
+
+function stepRivulets(dt) {
+  clock += dt;
+  mergeAcc += dt;
+  wetAcc += dt;
+  if (wetAcc >= 30) {   // established streams keep their channel wet
+    wetAcc = 0;
+    for (const rv of rivulets) for (let j = 0; j < rv.pts.length; j += 2) if (rv.pts[j].on) markWet(rv.pts[j].x, rv.pts[j].y, rv.w * 1.8);
+  }
+  if (mergeAcc >= 4) { mergeAcc = 0; mergeTouchingStreams(); }
+  const { maxR } = radii();
+  const heavy = Math.max(0, (SL.rain - 0.7) / 0.3);   // streams only above 80% on the rainfall slider
+  const want = Math.round(heavy ** 1.5 * 16 * Math.sqrt(simW * simH / (1280 * 800)));   // a few at 87%, more at 93%, many at 100%
+  if (rivulets.filter((r) => r.fed && !r.draining).length < want && rivulets.length < 40 && rand() < 0.03 * dt) spawnRivulet();
+
+  for (let i = rivulets.length - 1; i >= 0; i--) {
+    const rv = rivulets[i], pts = rv.pts;
+    const lastY = pts.length ? pts[pts.length - 1].y : rv.y0;
+    if (lastY >= simH - 2 && pts.length && pts[pts.length - 1].on && !rv.joined) addToSill(pts[pts.length - 1].x, rv.flow * rv.w * rv.w * 0.8 * dt);
+    // Between surges the channel settles to a steady trickle and waits for more water. It drains
+    // away only when the heavy rain stops, or when a wipe has cut it off from the water above.
+    if (!rv.fed) rv.holdT -= dt;
+    if (rv.orphan || (rv.fed && heavy === 0) || (!rv.fed && rv.holdT <= 0)) rv.draining = true;   // a stream running on its own water keeps going whatever the rain does
+    const target = rv.draining ? 0.2 : rv.base;
+    rv.flow += (target - rv.flow) * (rv.draining ? 0.004 : 0.0015) * dt;
+    rv.fw += (rv.flow - rv.fw) * Math.min(1, 0.02 * dt);
+    if (rv.adds) rv.adds = rv.adds.filter((a) => { a.t = Math.min(1, a.t + dt / 30); a.life -= dt / 600; return a.life > 0; });
+    if (rv.draining && drainStream(rv, dt)) { rivulets.splice(i, 1); continue; }
+    const wd = streamWidth(rv);
+    rv.bx0 = Infinity; rv.bx1 = -Infinity;
+    for (const p of pts) { if (p.x < rv.bx0) rv.bx0 = p.x; if (p.x > rv.bx1) rv.bx1 = p.x; }
+    rv.bx0 -= wd * 3 + 14 * S; rv.bx1 += wd * 3 + 14 * S;
+    if (rv.spill) { rv.spill.t -= dt / 50; if (rv.spill.t <= 0) rv.spill = null; }
+
+    // Everything above the first wiped point is still fed from the top of the pane.
+    const f = rv.orphan ? -2 : pts.findIndex((p) => !p.on);
+    rv.front = f;
+    rv.carving = false;
+    rv.stalled = false;
+    rv.burst *= Math.pow(0.985, dt);
+    // a stream that ran into another feeds it until that channel is wiped or dries up
+    rv.joins = rv.joins.filter((j) => {   // the extra water arrives, and fades, gradually
+      const alive = j.from.joined === rv && rivulets.includes(j.from);
+      j.t = Math.min(1, Math.max(0, (j.t ?? 1) + (alive ? 1 : -1) * dt / 60));
+      return alive || j.t > 0;
+    });
+    if (rv.joined) {
+      const o = rv.joined, q = pointAt(o, lastY);
+      if (!rivulets.includes(o) || o.orphan || !q || !q.on || Math.abs(q.x - rv.x) > (streamR(o, q) + Math.max(minStreamR(), wd) + 2) * 1.6) rv.joined = null;
+    }
+    if (f === -1 && rv.joined) {
+      // nothing to carve: the water continues down the other channel
+    } else if (f === -1) {
+      if (lastY >= rv.stopAt && lastY < simH + 10) {
+        // Out of water partway down: the tip waits until the next surge arrives, then runs on quickly.
+        rv.stalled = true;
+        for (const o of rivulets) {   // ...unless it has stopped right beside another stream: it is drawn into it
+          if (o === rv || o.orphan) continue;
+          const q = pointAt(o, lastY + 3);
+          if (q && q.on && Math.abs(q.x - rv.x) < streamR(o, q) + wd * 4) { rv.stopAt = Infinity; rv.stalled = false; break; }
+        }
+        if (rv.surges.some((sg) => sg.y + sg.len * 0.5 >= lastY)) {
+          rv.stopAt = rand() < 0.6 ? Infinity : lastY + simH * (0.15 + rand() * 0.35);
+          rv.burst = 1; rv.stalled = false;
+        }
+      }
+      if (lastY < Math.min(rv.stopAt, simH + 10)) {
+        // the head meanders down in smooth, unhurried bends, carving the channel
+        rv.carving = true;
+        let adv = rv.speed * (1 + 2 * rv.burst) * dt * (0.4 + rand() * 1.2);
+        // every so often the head stops, swells into a bead, then runs on
+        if (rv.pauseT > 0) { rv.pauseT -= dt; adv = 0; rv.stalled = true; }
+        else if (rand() < 0.004 * dt) { rv.pauseT = rv.pauseLen = 15 + rand() * 45; }
+        while (adv > 0) {
+          const y = (pts.length ? pts[pts.length - 1].y : rv.y0) + 3;
+          // a nearby channel draws the head toward it
+          let near = null, nd = Infinity;
+          for (const o of rivulets) {
+            if (o === rv || o.orphan) continue;
+            const q = pointAt(o, y);
+            if (q && q.on && Math.abs(q.x - rv.x) < nd) { nd = Math.abs(q.x - rv.x); near = { o, q }; }
+          }
+          // Stick-slip: the front runs down, snags on the glass and steps sideways in a short kink
+          // before it breaks free and runs on, so the path is crooked rather than wavy.
+          let step = 0;
+          if (rv.jog > 0) { rv.jog -= 1; step = rv.jogDx; }
+          else if (rand() < (0.012 + 0.03 * dirtAt(rv.x, y)) * rv.snag) {
+            const D = (rand() < 0.5 ? -1 : 1) * wd * (0.35 + rand() * rand() * 2), m = Math.max(2 + (rand() * 3 | 0), Math.ceil(Math.abs(D) / 1.5));   // gravity: never steeper than ~35° off vertical
+            rv.jog = m - 1; rv.jogDx = step = D / m; rv.kink = Math.min(1, Math.abs(D) / (wd * 2));
+          }
+          rv.vx += (rand() - 0.5) * 0.05 * S;
+          rv.vx += ((Math.sin(y * 0.013 + rv.ph[0]) * 0.6 + Math.sin(y * 0.0071 + rv.ph[1]) * 0.4) * 0.25 * S * rv.wander - rv.vx) * 0.1;   // a slow, gentle, uneven sway
+          const gapN = near ? nd - streamR(near.o, near.q) - wd : Infinity;
+          if (gapN < wd * 6) rv.vx += Math.sign(near.q.x - rv.x) * (gapN < wd * 2.5 ? 0.35 : 0.12) * S;   // close by, the head is drawn into it
+          rv.vx += wetPull(rv.x, y + 6 * S, wd + 6 * S) * 0.3 * S;
+          rv.vx -= (dirtAt(rv.x + 8 * S, y + 6 * S) - dirtAt(rv.x - 8 * S, y + 6 * S)) * 0.8 * S;   // steering round grimy patches
+          rv.vx += weather.wind * 0.06 * S;
+          rv.vx *= 0.8;
+          rv.vx = Math.max(-1.2, Math.min(1.2, rv.vx));
+          const MAXDX = 2.1;   // per 3 px of descent: water on glass can't run more sideways than ~35°
+          rv.x += Math.max(-MAXDX, Math.min(MAXDX, rv.vx + step));
+          const x = rv.x;
+          {
+            let k0 = channelWidth(rv, y);
+            // continuity: the same water slows where it runs across the slope, so it spreads wider
+            // there and draws thin down steep, straight stretches; grime pins the banks in tighter
+            const dxs = Math.abs(x - (pts.length ? pts[pts.length - 1].x : x)), cosA = 3 / Math.hypot(3, dxs);
+            k0 *= Math.pow(1 / cosA, 1.6) * (1.12 - 0.3 * dirtAt(x, y));
+            if (step) k0 *= 1.12;                                                        // water slows across the kink
+            else if (rv.kink > 0.05) { k0 *= 1 + 0.4 * rv.kink; rv.kink *= 0.55; }      // and gathers in the corner below it
+            pts.push({ x: rv.x, y, k: k0, k0, x0: rv.x, on: true });
+          }
+          eraseAt(rv.x, y, rv.w * 1.8);   // the water clears a wider path than it covers
+          if (rand() < 0.12) smallDrop(rv.x + (rand() < 0.5 ? -1 : 1) * rv.w * (1.1 + rand()), y + (rand() - 0.5) * 4, (0.6 + rand() * 0.9) * S);
+          markWet(rv.x, y, rv.w * 1.8);
+          if (!rv.orphan && rv.flow > 0.7 && pts.length > 40 && rivulets.length < 30 && rand() < 0.0015 * (0.5 + dirtAt(rv.x, y + 8 * S))) {
+            // a heavy stream divides, often where grime splits the flow; the branches may rejoin lower down
+            const dir = rv.vx >= 0 ? -1 : 1;
+            const br = newRivulet(rv.x, y, { w: rv.w * 0.7, flow: rv.flow * 0.55, fed: rv.fed });
+            br.vx = dir * 0.9; br.noMergeAbove = y + 40 * S; br.burst = 0.3;
+            rv.vx = -dir * 0.5; rv.flow *= 0.75; rv.noMergeAbove = y + 40 * S;
+            rivulets.push(br);
+          }
+          adv -= 3;
+          if (near && Math.abs(near.q.x - rv.x) < streamR(near.o, near.q) + Math.max(minStreamR(), wd * 0.9) + 1) {
+            // touching: the two become one thicker stream from here down
+            rv.joined = near.o; rv.carving = false;
+            near.o.joins = near.o.joins.filter((jn) => jn.from !== rv);
+            near.o.joins.push({ y, add: rv.w * 0.55, from: rv, t: 0 });
+            near.o.flow = Math.min(1.1, near.o.flow + 0.2);
+            break;
+          }
+        }
+      }
+    } else if (f >= 0 && rv.draining) {
+      rv.pool = null;
+    } else if (f >= 0) {
+      // Water arriving at a wiped edge clings to it and spreads sideways along the edge as a film.
+      if (!rv.pool || rv.pool.i !== f) {
+        const e = f > 0 ? pts[f - 1] : pts[0];
+        rv.pool = { i: f, x: e.x, y: e.y, t: 0, hold: 70 + rand() * 160, dir: downhill(rv.cutDir) };
+      }
+      const pl = rv.pool;
+      pl.t += dt * (0.5 + rv.flow);
+      const v = Math.min(1, pl.t / pl.hold);
+      const reach = wd * (1.5 + 7 * v);
+      pl.up = reach * 0.35; pl.down = reach * 1.4; pl.th = wd * (0.45 + 0.35 * v);
+      pl.half = (pl.up + pl.down) / 2;
+      if (pl.t > pl.hold) {
+        // Enough water has gathered for the tip to let go: it drops and carves a new path down.
+        // The stretch below the wipe is now cut off from the water and slowly dries.
+        const lower = pts.slice(f);
+        if (lower.some((p) => p.on)) {
+          const o = newRivulet(0, 0, { orphan: true, flow: rv.flow, w: rv.w, ph: rv.ph });
+          o.pts = lower; rivulets.push(o);
+        }
+        rv.pts = pts.slice(0, f);
+        // Water can't hang sideways along the edge: once it breaks through it falls straight down
+        // from where the stream met the edge, and the film along the edge drains into it.
+        rv.x = pl.x; rv.vx = 0; rv.burst = 0.6;
+        rv.stopAt = rand() < 0.12 ? pl.y + simH * (0.15 + rand() * 0.35) : Infinity;
+        if (!rv.pts.length) rv.y0 = pl.y - 3;
+        rv.spill = { x: pl.x, y: pl.y, up: pl.up, down: pl.down, th: pl.th, dir: pl.dir, t: 1 };
+        rv.pool = null;
+      }
+    }
+
+    // the channel reshapes itself while water runs through it
+    if (!rv.orphan && rv.flow > 0.1) evolveChannel(rv, f >= 0 ? f : pts.length, dt);
+    // surges of water travel down the connected part of the channel
+    const reachY = f >= 0 ? (f > 0 ? rv.pts[f - 1].y : rv.y0) : lastY;
+    if (rv.fed && !rv.draining && heavy > 0 && rand() < 0.035 * dt * (0.5 + heavy)) { addSurge(rv, rv.y0); rv.flow = Math.min(1.6, rv.flow + 0.3); }   // fed from above only in heavy rain
+    for (const sg of rv.surges) {
+      const q = pointAt(rv, sg.y), q2 = q && pointAt(rv, sg.y + 6);
+      const steep = q && q2 ? 6 / Math.max(6, Math.hypot(q2.x - q.x, 6)) : 1;   // gravity speeds it down steep stretches
+      sg.y += sg.speed * dt * (0.4 + 0.6 * steep);
+      sg.age += dt;
+    }
+    rv.surges = rv.surges.filter((sg) => {
+      if (sg.y - sg.len * 0.5 < Math.min(reachY, simH + 10)) return true;
+      if (rv.pool) rv.pool.t += 25;   // a surge reaching the wiped edge feeds the film
+      else if (rv.joined) { addSurge(rv.joined, reachY); rv.joined.flow = Math.min(1.1, rv.joined.flow + 0.2); }
+      return false;
+    });
+
+    // any drop that touches the water is pulled into the channel and runs down it as a surge
+    for (const d of drops) {
+      if (d.dead) continue;
+      if (touches(rv, d, reachY)) { d.dead = true; absorbDrop(rv, d, maxR); continue; }
+      const pl = rv.pool;
+      if (!pl || !pl.dir) continue;
+      const ex = d.x - pl.x, ey = d.y - pl.y, u = ex * pl.dir.x + ey * pl.dir.y;
+      if (u > -pl.up - d.r && u < pl.down + d.r && Math.abs(ey * pl.dir.x - ex * pl.dir.y) < d.r + pl.th * 1.5) {
+        d.dead = true; pl.t += d.r * 3;
+      }
+    }
+  }
+}
+
+// ---------- sound: rain on the pane ----------
+// On by default; browsers only allow audio after the viewer interacts, so it starts on the first
+// click, tap or key press anywhere on the page.
+let audio = null, soundOn = true, tapBudget = 0;
+function initAudio() {
+  const ctx = newAudioContext();
+  const sr = ctx.sampleRate, master = ctx.createGain(), comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -12; comp.ratio.value = 3; comp.attack.value = 0.002; comp.release.value = 0.15;
+  master.gain.value = 1; master.connect(comp); comp.connect(ctx.destination);
+  // Each drop is a dull knock on the pane, not a note: a burst of noise shaped by a broad
+  // resonance (so there's no clear pitch), over a short low thump of the glass flexing.
+  const resonate = (x, f, q) => {   // two-pole bandpass, run in place
+    const w = 2 * Math.PI * f / sr, al = Math.sin(w) / (2 * q), a0 = 1 + al;
+    const b0 = al / a0, b2 = -al / a0, a1 = -2 * Math.cos(w) / a0, a2 = (1 - al) / a0;
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (let i = 0; i < x.length; i++) {
+      const y = b0 * x[i] + b2 * x2 - a1 * y1 - a2 * y2;
+      x2 = x1; x1 = x[i]; y2 = y1; y1 = y; x[i] = y;
+    }
+  };
+  const taps = [];
+  for (let v = 0; v < 16; v++) {
+    // a soft tap on glass: a damped knock over a little thump of the pane flexing, a light click,
+    // and the very top rolled off, so it lands rounder than a ping
+    const len = (sr * 0.08) | 0, buf = ctx.createBuffer(1, len, sr), d = buf.getChannelData(0);
+    const knock = new Float32Array(len), tick = new Float32Array(len), thump = new Float32Array(len);
+    const kd = 150 + Math.random() * 90, td = 55 + Math.random() * 25;
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr, attack = Math.min(1, t / 0.0009), n = Math.random() * 2 - 1;   // a slightly slower attack takes the edge off
+      knock[i] = n * attack * Math.exp(-t * kd);
+      tick[i] = n * attack * Math.exp(-t * 900);
+      lp += (n - lp) * 0.06;
+      thump[i] = lp * attack * Math.exp(-t * td);
+    }
+    resonate(knock, 1300 + Math.random() * 1000, 1.3 + Math.random() * 0.6);
+    resonate(tick, 3600 + Math.random() * 900, 1.0);
+    resonate(thump, 170 + Math.random() * 90, 0.8);
+    let peak = 0, soft = 0;
+    const roll = 1 - Math.exp(-2 * Math.PI * 5000 / sr);   // one-pole lowpass at 5 kHz
+    for (let i = 0; i < len; i++) {
+      soft += (knock[i] * 1.0 + tick[i] * 0.15 + thump[i] * 0.4 - soft) * roll;
+      d[i] = soft; peak = Math.max(peak, Math.abs(d[i]));
+    }
+    for (let i = 0; i < len; i++) d[i] /= peak;   // every variant hits at the same level
+    taps.push(buf);
+  }
+  // the wash of rain on the rest of the window: brown-ish noise through a lowpass
+  const nlen = sr * 2, nbuf = ctx.createBuffer(1, nlen, sr), nd = nbuf.getChannelData(0);
+  let bn = 0;
+  for (let i = 0; i < nlen; i++) { bn = 0.97 * bn + (Math.random() * 2 - 1) * 0.15; nd[i] = bn; }
+  const src = ctx.createBufferSource(); src.buffer = nbuf; src.loop = true;
+  const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = 600;
+  const wash = ctx.createGain(); wash.gain.value = 0;
+  src.connect(lpf); lpf.connect(wash); wash.connect(master); src.start();
+  // white noise shared by the trickle of running water and the swish of a wipe
+  const wbuf = ctx.createBuffer(1, sr * 2, sr), wd = wbuf.getChannelData(0);
+  for (let i = 0; i < wd.length; i++) wd[i] = Math.random() * 2 - 1;
+  const loopNoise = (type, f, q, out) => {
+    const n = ctx.createBufferSource(); n.buffer = wbuf; n.loop = true;
+    const bp = ctx.createBiquadFilter(); bp.type = type; bp.frequency.value = f; bp.Q.value = q;
+    const g = ctx.createGain(); g.gain.value = 0;
+    n.connect(bp); bp.connect(g); g.connect(out); n.start(ctx.currentTime + Math.random());
+    return { g, bp };
+  };
+  const trickle = loopNoise('bandpass', 2600, 1.4, master);
+  // Fingers rubbing wet glass: a light, airy hiss, fluttering with the stick-slip of skin on glass
+  const swish = loopNoise('bandpass', 3400, 0.9, master);
+  const flutter = ctx.createOscillator(), flutterDepth = ctx.createGain();
+  flutter.frequency.value = 25; flutterDepth.gain.value = 0;
+  flutter.connect(flutterDepth); flutterDepth.connect(swish.g.gain); flutter.start();
+  swish.flutter = flutter; swish.depth = flutterDepth;
+  // The grip: skin sticks and slips on wet glass, a rapid run of tiny squeaks. A buzzy tone gated
+  // on and off by a chatter rhythm that speeds up with the wipe.
+  const grip = ctx.createOscillator(), gripBp = ctx.createBiquadFilter(), gripGain = ctx.createGain();
+  grip.type = 'sawtooth'; grip.frequency.value = 600;
+  gripBp.type = 'bandpass'; gripBp.frequency.value = 1100; gripBp.Q.value = 3.5;
+  gripGain.gain.value = 0;
+  const chatter = ctx.createOscillator(), chatterDepth = ctx.createGain();
+  chatter.type = 'square'; chatter.frequency.value = 14; chatterDepth.gain.value = 0;
+  chatter.connect(chatterDepth); chatterDepth.connect(gripGain.gain);
+  grip.connect(gripBp); gripBp.connect(gripGain); gripGain.connect(master); grip.start(); chatter.start();
+  swish.grip = { osc: grip, bp: gripBp, gain: gripGain, chatter, depth: chatterDepth };
+  // thunder: a long, low rumble of brown noise with a rolling envelope
+  const tlen = sr * 5, tbuf = ctx.createBuffer(1, tlen, sr), td = tbuf.getChannelData(0);
+  let tb = 0, peak = 0;
+  for (let i = 0; i < tlen; i++) {
+    const t = i / sr;
+    tb = 0.985 * tb + (Math.random() * 2 - 1) * 0.1;
+    const env = Math.min(1, t / 0.25) * Math.exp(-t * 0.75) * (0.7 + 0.3 * Math.sin(t * 7.3) * Math.sin(t * 2.1));
+    td[i] = tb * env; peak = Math.max(peak, Math.abs(td[i]));
+  }
+  for (let i = 0; i < tlen; i++) td[i] /= peak;
+  return { ctx, master, taps, wash, lpf, trickle, swish, thunderBuf: tbuf };
+}
+function playTap(x, size, gain) {
+  const { ctx, taps, master } = audio;
+  const s = ctx.createBufferSource(), g = ctx.createGain();
+  s.buffer = taps[(Math.random() * taps.length) | 0];
+  s.playbackRate.value = (1.08 - size * 0.25) * (0.92 + Math.random() * 0.16);   // bigger drops knock a little lower
+  g.gain.value = gain;
+  let out = g;
+  if (ctx.createStereoPanner) { const pn = ctx.createStereoPanner(); pn.pan.value = (x / simW * 2 - 1) * 0.75; g.connect(pn); out = pn; }
+  s.connect(g); out.connect(master);
+  s.start(ctx.currentTime + Math.random() * 0.012);
+}
+const soundLive = () => audio && soundOn && audio.ctx.state === 'running';
+// a drop landing in view
+// Light rain is sparse and quiet: only some landings are heard, and softly. Heavy rain is
+// every drop, at full strength.
+function tap(x, size, hit = 0) {
+  const h = Math.min(1, SL.rain * Math.min(1.15, weather.gust));
+  if (!soundLive() || tapBudget < 1 || rand() > 0.12 + 0.88 * h * h) return;
+  tapBudget -= 1;
+  playTap(x, Math.max(0, Math.min(1, size)), (0.35 + size * 0.45) * (0.2 + 0.8 * h * h) * (0.8 + 0.5 * hit));   // harder hits knock louder
+}
+// Loudness follows the rainfall slider: light rain is a few soft dots, heavy rain is dense
+// knocking over a fuller, brighter wash.
+function stepSound(dt) {
+  if (!audio) return;
+  tapBudget = Math.min(4, tapBudget + dt * (0.1 + 0.9 * SL.rain * SL.rain));   // ~6 knocks a second in light rain, up to ~60 in a downpour
+  const h = paused || !soundOn ? 0 : Math.min(1, SL.rain * Math.min(1.15, weather.gust)), t = audio.ctx.currentTime;   // swells with the gusts
+  // running water trickles in proportion to how much is flowing in the streams
+  let flowing = 0;
+  for (const rv of rivulets) if (!rv.orphan) flowing += rv.flow * rv.w / S;
+  audio.trickle.g.gain.setTargetAtTime(soundOn && !paused ? Math.min(0.05, flowing * 0.0018) : 0, t, 0.4);
+  audio.trickle.bp.frequency.setTargetAtTime(2200 + 700 * Math.sin(weather.t * 0.05), t, 0.5);
+  // a soft swish while the fingers slide on the glass, with the odd squeak on clean, wiped glass
+  const speed = stroke ? stroke.speedNow || 0 : 0;
+  if (stroke) stroke.speedNow = speed * 0.5;
+  const rub = soundOn ? Math.min(0.03, speed * 0.0012) : 0;
+  audio.swish.g.gain.setTargetAtTime(rub * 0.25, t, 0.04);          // only a trace of wet hiss
+  audio.swish.depth.gain.setTargetAtTime(rub * 0.15, t, 0.04);
+  const gr = audio.swish.grip, lvl = soundOn ? Math.min(0.022, speed * 0.0011) : 0;
+  gr.gain.gain.setTargetAtTime(lvl * 0.25, t, 0.03);                 // gated 0..lvl by the chatter; kept under the squeaks
+  gr.depth.gain.setTargetAtTime(lvl * 0.25, t, 0.03);
+  gr.chatter.frequency.setTargetAtTime(9 + speed * 1.3 + Math.random() * 4, t, 0.05);
+  gr.osc.frequency.setTargetAtTime(480 + speed * 12 + Math.random() * 60, t, 0.03);
+  gr.bp.frequency.setTargetAtTime(950 + speed * 20, t, 0.05);
+  audio.swish.flutter.frequency.setTargetAtTime(18 + speed * 1.5, t, 0.05);
+  audio.swish.bp.frequency.setTargetAtTime(3000 + speed * 40, t, 0.05);
+  // skin on wet glass squeaks lightly, again and again, as long as the fingers keep moving
+  if (soundLive() && stroke && speed > 2 && t > (audio.squeakAt || 0)) { squeak(speed); audio.squeakAt = t + 0.22 + Math.random() * 0.5; }
+  audio.wash.gain.setTargetAtTime(h * h * 0.22, t, 0.3);   // kept under the knocks
+  audio.lpf.frequency.setTargetAtTime(400 + 1200 * h * h, t, 0.3);
+  // rain striking the rest of the window, out of view
+  if (soundLive() && !paused && rand() < h * h * h * 0.45 * dt) playTap(rand() * simW, rand() * 0.4, (0.08 + rand() * 0.14) * h * h);
+}
+// One light squeak of a finger on wet glass: a soft, gliding tone that stutters as the skin grips
+// and lets go. Faster strokes squeak a little higher.
+function squeak(speed = 8) {
+  const { ctx, master } = audio, t = ctx.currentTime;
+  const o = ctx.createOscillator(), bp = ctx.createBiquadFilter(), env = ctx.createGain(), chop = ctx.createGain();
+  const slip = ctx.createOscillator(), slipDepth = ctx.createGain();
+  const dur = 0.12 + Math.random() * 0.22, f = 850 + Math.random() * 500 + Math.min(30, speed) * 12;
+  o.type = 'triangle';
+  o.frequency.setValueAtTime(f, t);
+  o.frequency.linearRampToValueAtTime(f * (1.06 + Math.random() * 0.12), t + dur * 0.6);
+  o.frequency.linearRampToValueAtTime(f * (0.96 + Math.random() * 0.06), t + dur);
+  bp.type = 'bandpass'; bp.frequency.value = f * 1.3; bp.Q.value = 1.6;
+  const peak = 0.005 + Math.random() * 0.005;
+  env.gain.setValueAtTime(0, t); env.gain.linearRampToValueAtTime(peak, t + 0.025);
+  env.gain.setValueAtTime(peak, t + dur * 0.65); env.gain.exponentialRampToValueAtTime(0.0002, t + dur);
+  slip.type = 'square'; slip.frequency.value = 30 + Math.random() * 35;   // stick-slip stutter
+  chop.gain.value = 0.65; slipDepth.gain.value = 0.35;
+  slip.connect(slipDepth); slipDepth.connect(chop.gain);
+  o.connect(bp); bp.connect(env); env.connect(chop); chop.connect(master);
+  o.start(t); slip.start(t); o.stop(t + dur + 0.02); slip.stop(t + dur + 0.02);
+}
+// thunder some seconds after a flash: the further the lightning, the longer the wait and the softer the rumble
+function thunder(delay, power) {
+  if (!soundLive()) return;
+  const { ctx, master, thunderBuf } = audio, s = ctx.createBufferSource(), lp = ctx.createBiquadFilter(), g = ctx.createGain();
+  s.buffer = thunderBuf; s.playbackRate.value = 0.8 + Math.random() * 0.3;
+  lp.type = 'lowpass'; lp.frequency.value = 160 + 120 * power;
+  g.gain.value = 0.25 + 0.35 * power;
+  s.connect(lp); lp.connect(g); g.connect(master);
+  s.start(ctx.currentTime + delay);
+}
+function startSound() {
+  if (!soundOn) return;
+  if (!audio) audio = initAudio();
+  if (audio.ctx.state !== 'running') audio.ctx.resume();
+}
+for (const ev of ['pointerdown', 'keydown', 'touchstart']) onPage(ev, startSound, { capture: true, passive: true });
+$('sound').addEventListener('click', () => {
+  soundOn = !soundOn;
+  if (soundOn) startSound();
+  $('sound').textContent = soundOn ? 'Mute sound' : 'Turn sound on';
+  $('sound').setAttribute('aria-pressed', String(soundOn));
+});
+
+// ---------- wiping with three fingers (one thumb on a phone) ----------
+// The fingers are on the inside of the pane, where the condensation is; the rain is on the outside.
+// So a wipe clears the fog and fine mist from the inside and leaves the raindrops exactly as they
+// were. It never wipes perfectly clean: the fingers take up the condensation they cross and leave
+// some of it behind them as tiny droplets, more where the glass was heavily fogged and fewer over
+// glass wiped a moment ago. Those droplets slowly evaporate as the fog creeps back over.
+// Index, middle and ring finger held together, pads and lower segments flat on the glass.
+// Hand frame: origin at the middle fingertip, +y toward the palm.
+let hand = null, stroke = null, lastPt = null, handA = 0, sway = 0;
+const pt = (e) => ({ x: localX(e), y: localY(e) });
+const TIP = 0.42;   // share of the finger length that is firm fingertip pad
+
+function handGeom() {
+  // on a phone-sized pane it is one thumb that wipes: a single broad, short pad
+  const thumb = viewW() < 640;
+  const w = (thumb ? 80 : 40) * S, g = 5 * S, L = (thumb ? 1.4 : 2.3) * w;
+  const fingers = thumb ? [{ x: 0, tip: 0 }] : [{ x: -(w + g), tip: 0.3 * w }, { x: 0, tip: 0 }, { x: w + g, tip: 0.38 * w }];
+  const circles = [];
+  for (const f of fingers) {
+    for (let k = 0; k <= 7; k++) { const t = k / 7; circles.push({ x: f.x, y: f.tip + t * L, r: w * 0.5 * (1 - 0.18 * t) }); }
+  }
+  return { w, g, L, fingers, circles };
+}
+
+// The forearm pivots at the elbow below the screen, so fingers lean left on the left side of the
+// pane and right on the right; sideways speed makes the fingertips trail behind the wrist.
+function aimHand(p, vx, snap) {
+  const target = Math.atan2(p.x - simW * 0.5, simH * 1.6 - p.y) * 1.15;
+  sway += (Math.max(-0.35, Math.min(0.35, -vx * 0.012)) - sway) * 0.2;
+  const next = snap ? target : handA + (target + sway - handA) * 0.35;
+  handA = Math.max(-1.1, Math.min(1.1, next));   // a wiping hand never turns sideways or down
+}
+
+// The fingertips press firmly and the lower segments lie flat: together they clear the inside of the
+// glass in one clean band.
+function stampHand(x, y, ang) {
+  const c = Math.cos(ang), s = Math.sin(ang), { w, L } = hand;
+  const rTip = w * 0.5, rMid = w * 0.5 * (1 - 0.18 * TIP), rBase = w * 0.5 * 0.82;
+  for (const f of hand.fingers) {
+    let lx = f.x, ly = f.tip + TIP * L;
+    wipes.push(x + c * lx - s * ly, y + s * lx + c * ly, rMid, rTip, TIP * L, ang, 1, 0);
+    ly = f.tip + L;
+    wipes.push(x + c * lx - s * ly, y + s * lx + c * ly, rBase, rMid, (1 - TIP) * L, ang, 1, 1);
+  }
+  for (const k of hand.circles) markWiped(x + c * k.x - s * k.y, y + s * k.x + c * k.y, k.r, 1);
+}
+
+// Droplets a wipe leaves per px² of fully fogged glass it clears (damp air leaves a few more)
+const LEAVE = 1 / 260;
+function sweep(a, b, a0, a1) {
+  const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy);
+  stroke.speedNow = Math.max(stroke.speedNow || 0, len);
+  const pl = Math.hypot(stroke.mx, stroke.my), pmx = pl > 0.2 ? stroke.mx / pl : 0, pmy = pl > 0.2 ? stroke.my / pl : 0;
+  if (len > 0.5) {
+    const k = Math.min(1, len / 40);
+    stroke.mx += (dx / len - stroke.mx) * k; stroke.my += (dy / len - stroke.my) * k;
+  }
+  const ml = Math.hypot(stroke.mx, stroke.my) || 1, mx = stroke.mx / ml, my = stroke.my / ml, nx = -my, ny = mx;
+  const steps = Math.max(1, Math.ceil(Math.max(len, Math.abs(a1 - a0) * hand.L) / (hand.w * 0.25))), stepLen = len / steps;
+
+  for (let st = 1; st <= steps; st++) {
+    const t = st / steps, x = a.x + dx * t, y = a.y + dy * t, ang = a0 + (a1 - a0) * t;
+    const c = Math.cos(ang), s = Math.sin(ang);
+    stroke.dist += stepLen;
+    // the hand's reach across the stroke (ePos, eNeg) and along it (eFront, eBack)
+    let ePos = -Infinity, eNeg = Infinity, eFront = -Infinity, eBack = Infinity;
+    for (const cc of hand.circles) {
+      const hx = c * cc.x - s * cc.y, hy = s * cc.x + c * cc.y, qn = hx * nx + hy * ny, qm = hx * mx + hy * my;
+      ePos = Math.max(ePos, qn + cc.r); eNeg = Math.min(eNeg, qn - cc.r);
+      eFront = Math.max(eFront, qm + cc.r); eBack = Math.min(eBack, qm - cc.r);
+    }
+    // the condensation the fingers take up as they reach new glass: as much as had formed there
+    if (stepLen > 0) {
+      let fogged = 0;
+      for (let i = 0; i < 5; i++) {
+        const o = eNeg + (ePos - eNeg) * (i + 0.5) / 5, f = eFront + WG;
+        fogged += 1 - Math.min(1, wipedAt(x + nx * o + mx * f, y + ny * o + my * f));
+      }
+      stroke.leave += stepLen * (ePos - eNeg) * (fogged / 5) * LEAVE * (0.7 + 0.6 * P.humid);
+    }
+    stampHand(x, y, ang);
+    // and part of it stays behind them, as tiny droplets on the glass they have just cleared
+    // (beads are laid after this frame's wipe, so they survive it)
+    const big = viewW() < 640 ? 1.6 : 1;   // on a phone, where raindrops are drawn larger, so are these
+    while (stroke.leave >= 1) {
+      stroke.leave -= 1;
+      const o = eNeg + (ePos - eNeg) * (0.04 + 0.92 * rand()), back = eBack - rand() * Math.max(stepLen, 2 * S);
+      const r = rand() < 0.1 ? 2.8 + rand() * 1.7 : 1 + rand() * rand() * 2;   // little drops, smaller than raindrops; the odd larger bead
+      bead(beads, x + nx * o + mx * back, y + ny * o + my * back, r * S * big, 0.18);
+    }
+    if (len <= 0.5) continue;
+    // remember where both edges of the wipe ran, so water left on them can follow their curve
+    const eh = stroke.edges || (stroke.edges = { pos: [], neg: [] });
+    eh.pos.push({ x: x + nx * ePos, y: y + ny * ePos }); eh.neg.push({ x: x + nx * eNeg, y: y + ny * eNeg });
+    if (eh.pos.length > 80) { eh.pos.shift(); eh.neg.shift(); }
+  }
+
+  // Turning partway through a wipe leaves a thin, curved sliver of water lying along the outside
+  // edge of the bend, following the curve the fingers just traced. Only after a real change of
+  // direction, and spaced out along the stroke, so there are just a few.
+  if (len > 0.5 && pl > 0.2) {
+    const ux = dx / len, uy = dy / len;
+    const turn = Math.acos(Math.max(-1, Math.min(1, pmx * ux + pmy * uy)));
+    const side = pmx * uy - pmy * ux > 0 ? 'neg' : 'pos';   // outside of the bend
+    stroke.turnAcc = (stroke.turnAcc || 0) + turn;
+    const sinceLast = stroke.dist - (stroke.lastSliver ?? -1e9);
+    const pts = stroke.edges && stroke.edges[side];
+    if (stroke.turnAcc > 1.8 && sinceLast > hand.w * 8 && pts && pts.length > 6) {   // only a sharp turn, and rarely
+      stroke.turnAcc = 0; stroke.lastSliver = stroke.dist;
+      // walk back along that edge for the sliver's length, keeping points a few pixels apart
+      const want = (14 + rand() * 22) * S, chain = [pts[pts.length - 1]];
+      let got = 0;
+      for (let i = pts.length - 2; i >= 0 && got < want; i--) {
+        const q = chain[chain.length - 1], d = Math.hypot(pts[i].x - q.x, pts[i].y - q.y);
+        if (d >= 3 * S) { chain.push(pts[i]); got += d; }
+      }
+      if (chain.length >= 3) {
+        const th = (0.8 + rand() * 0.8) * S, seed = rand() * 6.283;
+        for (let i = 1; i < chain.length; i++) {
+          const a0 = chain[i - 1], b0 = chain[i], u0 = (i - 1) / (chain.length - 1), u1 = i / (chain.length - 1);
+          const t0 = th * Math.max(0.25, Math.sin(Math.PI * u0)), t1 = th * Math.max(0.25, Math.sin(Math.PI * u1));
+          beads.push(b0.x, b0.y, t1, t0, Math.hypot(a0.x - b0.x, a0.y - b0.y), Math.atan2(a0.x - b0.x, b0.y - a0.y), 0.06, seed);
+        }
+      }
+    }
+  }
+}
+
+// Now and then lifting the fingers leaves a little more water from under one fingertip: a single
+// small, irregular droplet where the pad was. Never a set of fingertip marks.
+function release() {
+  if (!stroke) return;
+  if (lastPt && rand() < 0.2) {
+    const c = Math.cos(handA), s = Math.sin(handA), f = hand.fingers[(rand() * hand.fingers.length) | 0];
+    const lx = f.x + (rand() - 0.5) * hand.w * 0.3, ly = f.tip + hand.w * (0.05 + rand() * 0.2);
+    bead(beads, lastPt.x + c * lx - s * ly, lastPt.y + s * lx + c * ly, (3 + rand() * 2) * S * (viewW() < 640 ? 1.6 : 1), 0.3);
+  }
+  stroke = null;
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  lastPt = pt(e); aimHand(lastPt, 0, true); sway = 0;
+  stroke = { mx: 0, my: 0, dist: 0, leave: 0 };
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+  sweep(lastPt, lastPt, handA, handA);
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!stroke) return;
+  const p = pt(e), a0 = handA;
+  aimHand(p, p.x - lastPt.x, false);
+  sweep(lastPt, p, a0, handA);
+  lastPt = p;
+});
+canvas.addEventListener('pointerup', release);
+canvas.addEventListener('pointercancel', release);
+
+// clears the inside of the glass; the rain outside stays
+$('wipe').addEventListener('click', () => { clearTarget(D, [0, 0, 0, 0]); clearTarget(F[0], [0, 0, 0, 0]); wg.fill(1); });
+let paused = false;
+$('pause').addEventListener('click', () => { paused = !paused; $('pause').textContent = paused ? 'Resume' : 'Pause'; });
+
+// ---------- render passes ----------
+let fogAcc = 0;
+function passMist(dt) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, D.fb); gl.viewport(0, 0, D.w, D.h);
+  gl.enable(gl.BLEND);
+  // D is the inside of the pane: fine mist and droplets of condensation (R, G) and the fog (B).
+  // Only the fingers clear it; the rain runs down the outside and never touches it.
+  gl.blendFunc(gl.ONE, gl.ONE); drawBlobs(droplets, 0, 0.35);
+  gl.blendFunc(gl.ZERO, gl.ONE_MINUS_SRC_ALPHA); drawBlobs(wipes, 2, 0.05);
+  gl.blendFunc(gl.ONE, gl.ONE); drawBlobs(beads, 0, 0.35);   // what the wipe leaves lands after it
+  // Glass that fingers or running water pass over is left wet: a very light film of water
+  gl.bindFramebuffer(gl.FRAMEBUFFER, F[0].fb); gl.viewport(0, 0, F[0].w, F[0].h);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  drawFilm(erase, 0.22); drawFilm(wipes, 0.3);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, D.fb); gl.viewport(0, 0, D.w, D.h);
+  fogAcc += dt;
+  if (fogAcc >= 6) {
+    const k = fogAcc; fogAcc = 0;
+    gl.colorMask(false, false, true, false);           // glass slowly fogs back over
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    drawFill(0, 0, 1, 1 - Math.pow(1 - condenseRate(), k));
+    gl.colorMask(true, true, false, false);            // mist evaporates
+    gl.blendFunc(gl.ZERO, gl.SRC_ALPHA);
+    drawFill(0, 0, 0, Math.pow(0.9993, k * (1.6 - 1.2 * P.humid)));   // fine mist lingers longer in damp air
+    gl.colorMask(true, true, true, true);
+  }
+  gl.disable(gl.BLEND);
+  droplets.n = 0; erase.n = 0; wipes.n = 0; beads.n = 0;
+  stepFilm(dt);
+}
+// lay a batch of shapes into the film at the given thickness (blob mode 8 reads p0 as thickness)
+function drawFilm(b, thick) {
+  if (!b.n) return;
+  const a = b.a;
+  for (let i = 0; i < b.n; i++) a[i * 8 + 6] = thick;
+  drawBlobs(b, 8, 0.05);
+}
+function stepFilm(dt) {
+  if (!dt) return;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, F[1].fb); gl.viewport(0, 0, F[1].w, F[1].h);
+  gl.useProgram(filmP.p);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, F[0].tex);
+  gl.uniform1i(filmP.u.uF, 0);
+  gl.uniform2f(filmP.u.uTx, 1 / F[0].w, 1 / F[0].h);
+  gl.uniform1f(filmP.u.uDt, dt);
+  gl.bindVertexArray(vaoQuad); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  F = [F[1], F[0]];
+}
+// The rain on the outside of the pane: drops, their tails and the streams. (The condensation on the
+// inside stays in its own map, D, and is laid over all of this in passFinal.)
+function passWater() {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, W.fb); gl.viewport(0, 0, W.w, W.h);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  buildDropQuads();
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+  drawBlobs(dropQuads, 0, 0.35);
+  drawBlobs(tails, 5, 0.35);
+  gl.blendEquationSeparate(gl.MAX, gl.FUNC_ADD);
+  drawBlobs(streams, 3, 0.35);
+  gl.blendEquation(gl.FUNC_ADD);
+  gl.disable(gl.BLEND);
+  dropQuads.n = 0; streams.n = 0; tails.n = 0;
+}
+function passFinal() {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(fin.p);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, W.tex);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, D.tex);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, bgTex);
+  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, F[0].tex);
+  const u = fin.u;
+  gl.uniform1i(u.uWater, 0); gl.uniform1i(u.uMist, 1); gl.uniform1i(u.uBg, 2); gl.uniform1i(u.uFilm, 3);
+  gl.uniform2f(u.uFilmTx, 1 / F[0].w, 1 / F[0].h);
+  if (vid) gl.uniform2f(u.uBgAnchor, 0, 0); else gl.uniform2f(u.uBgAnchor, 0.5, 0.5);   // a video is pinned by its bottom-left corner
+  gl.uniform2f(u.uTexel, 1 / W.w, 1 / W.h);
+  const A = simW / simH, B = bgW / bgH;
+  if (A > B) gl.uniform2f(u.uBgScale, 1, B / A); else gl.uniform2f(u.uBgScale, A / B, 1);
+  gl.uniform2f(u.uBgSize, bgW, bgH);
+  gl.uniform1f(u.uAspect, simH / simW);
+  gl.uniform1f(u.uRefract, 0.04 + P.refract * 0.26);
+  gl.uniform1f(u.uFog, P.fog);
+  gl.uniform1f(u.uLod, 4.5 + P.fog * 3.0);
+  gl.uniform1f(u.uTime, weather.t / 60);
+  gl.uniform1f(u.uRainOut, Math.min(1, (0.05 + 0.95 * SL.rain) ** 1.6 * weather.gust));   // light at 50%, the same downpour at 100%
+  gl.uniform1f(u.uWind, weather.wind);
+  gl.uniform1f(u.uFlash, weather.flash);
+  gl.uniform1f(u.uWdpr, W.w / simW);
+  gl.uniform1f(u.uHcap, holdR() * 0.7);
+  gl.bindVertexArray(vaoQuad); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+// ---------- start with a pane that has already been in the rain ----------
+// (deferred until the page has a real size; a frame can start out 0 x 0)
+let warmed = false;
+function prewarm() {
+  if (warmed || viewW() < 2 || viewH() < 2) return;
+  warmed = true;
+  const { minR, maxR } = radii(), area = simW * simH / (1280 * 800);
+  for (let i = 0; i < 160 * area; i++) addDrop(rand() * simW, rand() * simH, minR + (maxR * 0.8 - minR) * Math.pow(rand(), 2));
+  for (let i = 0; i < 6000 * area * P.mist; i++) bead(droplets, rand() * simW, rand() * simH, (0.6 + rand() * rand() * 1.9) * S, 0.12);
+  for (let i = 0; i < 300; i++) { step(1); passMist(1); }
+}
+resize();
+prewarm();
+
+let resizeT = 0;
+onPage('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(resize, 120); });
+
+let last = performance.now(), statT = 0;
+function frame(now) {
+  const dt = Math.min(Math.max((now - last) / 16.667, 0.2), 3) * (reduced ? 0.6 : 1);
+  last = now;
+  if (viewW() > 0 && viewH() > 0 && (Math.round(viewW()) !== simW || Math.round(viewH()) !== simH)) resize();
+  if (!warmed) prewarm();
+  if (!paused) step(dt);
+  stepSound(dt);
+  passMist(paused ? 0 : dt);
+  passWater();
+  updateVideo();
+  passFinal();
+  if (now - statT > 400) {
+    statT = now;
+    let moving = 0; for (const d of drops) if (d.moving) moving++;
+    $('stat').textContent = `${drops.length} drops · ${moving} running`;
+  }
+  nextFrame(frame);
+}
+nextFrame(frame);
+})();
+</script>
+<script src="../../assets/side.js?v=4" data-current="rain-on-glass" data-theme="dark"></script>
+</body>
+</html>

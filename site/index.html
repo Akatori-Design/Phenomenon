@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phenomenon · Akatori Design</title>
+<meta name="description" content="Phenomenon: interactive animations of natural phenomena by Hiro · Akatori Design.">
+<meta name="theme-color" content="#eeebe5">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<style>
+/* Nothing but the wall, and its name lettered on the side (assets/side.js), which opens onto the
+   other pieces. */
+:root { --plaster: #eeebe5; --ease: cubic-bezier(0.22, 0.61, 0.36, 1); color-scheme: light; }
+html, body { height: 100%; }
+body { margin: 0; overflow: hidden; background: var(--plaster); }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.wall { position: fixed; inset: 0; background: var(--plaster); }
+.wall canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  opacity: 0; transition: opacity 1.8s var(--ease);
+}
+.wall.is-lit canvas { opacity: 1; }
+.wall.no-gl { background: var(--plaster) url("assets/img/komorebi-wall.jpg") center / cover no-repeat; }
+.wall.no-gl canvas { display: none; }
+@media (prefers-reduced-motion: reduce) { .wall canvas { transition: none; } }
+</style>
+</head>
+<body>
+
+<main class="wall" data-komorebi>
+  <h1 class="sr-only">Phenomenon, by Hiro · Akatori Design</h1>
+  <canvas aria-label="Sunlight through the leaves of an olive tree, moving on a white wall. Tap the wall to send a gust."></canvas>
+</main>
+
+<script src="assets/komorebi.js?v=3"></script>
+<script src="assets/side.js?v=4" data-current="komorebi-wall"></script>
+</body>
+</html>

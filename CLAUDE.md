@@ -16,6 +16,8 @@ installed elsewhere as a private, signed web component from GitHub Packages.
 packages/<piece>/         the installable <piece> element, built from <piece>/index.html
 docs/<piece>.jpg          screenshot for the repo README (800×500)
 .github/workflows/publish.yml   publishes a package when a <piece>@<version> tag is pushed
+site/                     the website on GitHub Pages: copies of the pieces, each with a vertical name menu
+.github/workflows/pages.yml     publishes site/ to GitHub Pages on every push to main that touches it
 ```
 
 Folder names are lowercase-hyphenated and become the package name (`@akatori-design/<piece>`) and
