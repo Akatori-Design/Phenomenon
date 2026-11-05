@@ -7,14 +7,14 @@ name lettered vertically on the right. Tap the name and the other pages slide ou
 | Page | Name | What it is |
 | --- | --- | --- |
 | `/` | 木漏れ日 komorebi | the landing page: the Komorebi wall, live, and nothing else |
-| `/works/komorebi-wall/` | 木漏れ日 komorebi | Komorebi Wall |
+| `/works/komorebi-wall/` | 木漏れ日 komorebi | Komorebi Wall, with its rustling sound |
 | `/works/rain-on-glass/` | 雨の日 rainy day | Rain on Glass |
 | `/works/attic-light/` | 屋根裏 attic | Attic Light |
 | imhiro.xyz | ひろの部屋 hiro's room | link out |
 
 ```
 index.html                 the landing page
-assets/komorebi.js         the Komorebi Wall effect, scoped to the landing page (no tray)
+assets/komorebi.js         the Komorebi Wall effect, scoped to the landing page
 assets/side.js             the vertical name and its menu, shared by every page
 assets/img/komorebi-wall.jpg   still shown if the browser has no WebGL 2
 works/<piece>/index.html   the pieces, copied from the folders at the root of this repo
@@ -40,10 +40,20 @@ None of the pages show a control tray; each runs at fixed settings.
 - **Komorebi Wall**: breeze 43%, gusts 34%, shade depth 31%, olive tree. On the landing page the
   effect runs from `assets/komorebi.js`, derived from `komorebi-wall/index.html` with the same
   section order. Tapping the wall sends a gust; the leaves rustle once the page has been tapped.
+- **Komorebi Wall** (`works/komorebi-wall/`): the piece itself, tray hidden, at the same settings.
 - **Rain on Glass**: the rain is on the outside of the pane and the condensation on the inside.
-  - The fog lies over the street and the raindrops, and the rain never clears it.
-  - Wiping clears only the inside, so the raindrops stay where they are. The fingers leave tiny
-    drops of condensation behind them, which evaporate as the fog creeps back.
+  - Outside: the street (a 4K upscale of the original clip, played at 1.5×; 1080p on phones),
+    the raindrops and their streams. Running drops strew tiny drops that last about a minute, and
+    their trails stay on the glass after they leave the pane.
+  - Inside: a fog with a fine grain of micro-droplets lies over all of it. The rain never clears
+    it; it comes back about ten seconds after a wipe.
+  - Wiping: it is the fingertip pads that wipe; the rest of the finger barely touches. They clear
+    the fog, leave a thin, quickly drying streaky film, and leave drops behind (in the fingertips'
+    tracks and along both edges of the band). The water they gather rides their leading edge as
+    thin lines shaped like the fingertips, staying where the wipe stops; past what it can hold,
+    it drips. Wiping over earlier water pushes it together. All of it stays as the fog returns,
+    evaporating only over minutes, and the raindrops outside are never touched.
+  - Drips run down the inside, clearing a narrow track through the fog and leaving tiny drops.
   - The drops knock a little softer: the knock resonance is 1.3–2.3 kHz, the click is quieter, and
     everything above 5 kHz is rolled off.
   - The view holds still under the pointer, and the street video is retried twice before falling
