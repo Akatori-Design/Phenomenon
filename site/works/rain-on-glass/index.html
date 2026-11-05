@@ -442,7 +442,15 @@ void main() {
                  texture(uFilm, uv + vec2(0.0, ft.y)).r - texture(uFilm, uv - vec2(0.0, ft.y)).r);
   float wetK = smoothstep(0.0, 0.12, fh);
   vec2 filmOff = -fg * 0.26 * uRefract * vec2(uAspect, 1.0);
-  vec3 sharp = bgAt(uv + filmOff, 0.1 + 0.5 * wetK, (1.0 - fogged) * (1.0 - fogged));   // full detail through clear glass, and crisp rain
+  // full detail through clear glass, and crisp rain; fog scatters the light, so through it the view blurs
+  float fl = 0.1 + 0.5 * wetK + 4.0 * fogged;
+  vec3 sharp = bgAt(uv + filmOff, fl, (1.0 - fogged) * (1.0 - fogged));
+  if (fogged > 0.05) {   // the coarse level smoothed into an even blur with four more samples around it
+    vec2 b = bgUv(uv + filmOff), bo = exp2(fl) * 0.7 / uBgSize;
+    vec3 avg = textureLod(uBg, b, fl).rgb + textureLod(uBg, b + bo, fl).rgb + textureLod(uBg, b - bo, fl).rgb
+             + textureLod(uBg, b + vec2(bo.x, -bo.y), fl).rgb + textureLod(uBg, b + vec2(-bo.x, bo.y), fl).rgb;
+    sharp = mix(sharp, lit(avg * 0.2), smoothstep(0.05, 0.4, fogged));
+  }
   float sLum = dot(sharp, vec3(0.299, 0.587, 0.114));
   sharp = mix(vec3(sLum), sharp, 1.0 + 0.2 * wetK) * (1.0 - 0.08 * wetK);
   sharp += vec3(0.78, 0.82, 0.88) * (0.75 * max(fg.y - 0.3 * fg.x, 0.0) + 0.04 * wetK);
@@ -521,7 +529,7 @@ void main() {
   inside += vec3(0.5, 0.48, 0.44) * glintS * 0.35;
 
 glass += bloom;
-  vec3 col = mix(glass, inside, mask);   // everything outside: the street, and the rain on the pane
+  vec3 col = mix(glass, inside, mask * (1.0 - 0.85 * fogged));   // everything outside: the street, and the rain on the pane (blurred out behind fog)
 
   // The condensation on the inside lies over all of it. Where the glass is fogged, the street shows
   // only as soft light through the haze, and the raindrops beyond it as faint, brighter blots.
@@ -2210,8 +2218,9 @@ function pruneInWater() {
 // way and leaving a few beads behind, until it has too little left to go on. Wiping over it takes
 // it up again.
 const drips = [];
-const dripR = () => 4 * S * (viewW() < 640 ? 1.6 : 1);   // an inside drop this big, or bigger, may run
+const dripR = () => 2.8 * S * (viewW() < 640 ? 1.6 : 1);   // an inside drop this big, or bigger, may run
 function addDrip(x, y, r) {
+  r = Math.min(r, dripR() * 1.6);   // drips on the inside stay small
   if (drips.length < 6) drips.push({ x, y, r, vx: 0, vy: 0.15 * S, stuck: 0, gap: r * (3 + rand() * 4), lastY: y, seed: rand() * 6.283 });
   else lay(x, y, r);
 }
@@ -2230,13 +2239,13 @@ function stepDrips(dt) {
     // two drips that touch run on as one
     for (let j = i - 1; j >= 0; j--) {
       const o = drips[j];
-      if (Math.hypot(o.x - d.x, o.y - d.y) < (o.r + d.r) * 0.9) { d.r = Math.min(dripR() * 2, Math.cbrt(d.r ** 3 + o.r ** 3)); d.y = Math.max(d.y, o.y); drips.splice(j, 1); i--; }
+      if (Math.hypot(o.x - d.x, o.y - d.y) < (o.r + d.r) * 0.9) { d.r = Math.min(dripR() * 1.7, Math.cbrt(d.r ** 3 + o.r ** 3)); d.y = Math.max(d.y, o.y); drips.splice(j, 1); i--; }
     }
     // it takes in the water lying in its way, and grows by it
     for (let j = inWater.length - 1; j >= 0; j--) {
       const q = inWater[j];
       if (Math.abs(q.x - d.x) < d.r * 1.2 && q.y > py - d.r * 1.2 && q.y < d.y + d.r * 1.2) {
-        d.r = Math.min(dripR() * 2, Math.cbrt(d.r ** 3 + q.v));
+        d.r = Math.min(dripR() * 1.7, Math.cbrt(d.r ** 3 + q.v));
         inWater[j] = inWater[inWater.length - 1]; inWater.pop();
       }
     }
@@ -2331,7 +2340,7 @@ function stampHand(x, y, ang, dir) {
 }
 
 // Droplets a wipe leaves per px² of fully fogged glass it clears (damp air leaves a few more)
-const LEAVE = 1 / 360;
+const LEAVE = 1 / 600;
 // how much of it a fingertip can hold before some is left behind (in droplets' worth)
 const TIP_HOLD = 8;
 function sweep(a, b, a0, a1) {
@@ -2413,7 +2422,7 @@ function sweep(a, b, a0, a1) {
     if (stroke.tip > TIP_HOLD * tips.length) {
       stroke.tip -= TIP_HOLD;
       const r = 2.4 + 2.4 * (1 - Math.exp(-stroke.got / 150)) + rand() * 0.8;
-      leaveAt(tips[(rand() * tips.length) | 0] + (rand() - 0.5) * hand.w * 0.3, r, r * S * big >= dripR() && rand() < 0.12);
+      leaveAt(tips[(rand() * tips.length) | 0] + (rand() - 0.5) * hand.w * 0.3, r, r * S * big >= dripR() && rand() < 0.06);
     }
     if (len <= 0.5) continue;
     // remember where both edges of the wipe ran, so water left on them can follow their curve
@@ -2499,7 +2508,7 @@ function pushedLine() {
   let L = 0;
   for (const pts of runs) for (let i = 1; i < pts.length; i++) L += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
   const big = viewW() < 640 ? 1.6 : 1;
-  const base = (0.4 + 0.7 * (1 - Math.exp(-stroke.got / 150))) * S * big;            // from the fog it has wiped
+  const base = (0.3 + 0.5 * (1 - Math.exp(-stroke.got / 150))) * S * big;            // from the fog it has wiped
   const want = Math.sqrt(base * base + stroke.carry / (1.6 * Math.max(L, 1)));        // and the water it has pushed together
   const th = Math.min(want, lineMax()), over = 1.6 * L * Math.max(0, want * want - th * th);
   const at = (p, w) => ({ x: lastPt.x + p.x + ux * w * 0.6, y: lastPt.y + p.y + uy * w * 0.6 });   // just over the wiped edge
@@ -2531,7 +2540,7 @@ function showPushed() {
   const line = pushedLine();
   if (!line) return;
   // too much to hold: its lowest point gathers into a drop that runs, taking that water with it
-  if (line.over > dripR() ** 3 * 4 && stroke.dist - (stroke.lastDrip ?? -1e9) > hand.w * 1.5) {
+  if (line.over > dripR() ** 3 * 12 && stroke.dist - (stroke.lastDrip ?? -1e9) > hand.w * 1.5) {
     stroke.lastDrip = stroke.dist;
     const r = Math.min(dripR() * 1.8, Math.max(dripR() * 1.05, Math.cbrt(line.over)));
     addDrip(line.low.x, line.low.y + line.low.t + r * 0.6, r);
@@ -2551,16 +2560,16 @@ function release() {
   if (lastPt && stroke.got + stroke.carry > 0.5) {
     const c = Math.cos(handA), s = Math.sin(handA), big = viewW() < 640 ? 1.6 : 1;
     for (const f of hand.fingers) {
-      for (let i = 0, n = 2 + (rand() < 0.5 ? 1 : 0); i < n; i++) {
+      for (let i = 0, n = 1 + (rand() < 0.4 ? 1 : 0); i < n; i++) {
         const lx = f.x + (rand() - 0.5) * hand.w * 0.45, ly = f.tip + (rand() - 0.35) * hand.w * 0.45;
-        lay(lastPt.x + c * lx - s * ly, lastPt.y + s * lx + c * ly, (1.1 + rand() * 1.3) * S * big, 0.22);
+        lay(lastPt.x + c * lx - s * ly, lastPt.y + s * lx + c * ly, (0.9 + rand() * 1.0) * S * big, 0.22);
       }
     }
   }
   const line = pushedLine();
   if (line) {
     for (const g of line.segs) layLine(g.x, g.y, g.r1, g.r2, g.len, g.ang, stroke.seed);
-    if (line.over > dripR() ** 3 * 2 || (stroke.got > 150 && rand() < 0.25)) {
+    if (line.over > dripR() ** 3 * 6 || (stroke.got > 150 && rand() < 0.25)) {
       addDrip(line.low.x, line.low.y + line.low.t + dripR() * 0.6, Math.min(dripR() * 1.8, Math.max(dripR() * 1.05, Math.cbrt(line.over))));
     }
   }
@@ -2601,7 +2610,7 @@ function passMist(dt) {
   // Glass that fingers or running water pass over is left wet: a very light film of water
   gl.bindFramebuffer(gl.FRAMEBUFFER, F[0].fb); gl.viewport(0, 0, F[0].w, F[0].h);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  drawFilm(erase, 0.22); drawFilm(wipes, 0.18, 9);   // a wipe leaves the glass damp for a moment, streaked along the stroke
+  drawFilm(erase, 0.22); drawFilm(wipes, 0.1, 9);   // a wipe leaves the glass damp for a moment, streaked along the stroke
   gl.bindFramebuffer(gl.FRAMEBUFFER, D.fb); gl.viewport(0, 0, D.w, D.h);
   fogAcc += dt;
   if (fogAcc >= 6) {
