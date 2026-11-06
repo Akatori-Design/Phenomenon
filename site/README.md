@@ -3,6 +3,7 @@
 The site for Phenomenon by Hiro · Akatori Design, published at
 https://akatori-design.github.io/Phenomenon/. Every page is just a piece, full screen, with its
 name lettered vertically on the right. Tap the name and the other pages slide out beside it.
+Rain on Glass is the exception: it shows the piece alone, with no name or menu.
 
 | Page | Name | What it is |
 | --- | --- | --- |
@@ -69,6 +70,7 @@ None of the pages show a control tray; each runs at fixed settings.
   - The drops land gently: a soft knock (resonance 1.3–2.3 kHz) with a slow-ish attack, hardly any
     click, everything above 5 kHz rolled off, and only a few knocks a second.
   - The view holds still under the pointer.
+  - Wiping is silent: the swish and squeaks of the fingers are held at zero.
   - Kept light: the out-of-focus view is blurred once per video frame into a small texture, the drop
     shading runs only where there is water, the video is uploaded straight to the GPU, and the
     picture is drawn at up to ~3.4 megapixels (the water maps at ~2.6), stepping down if frames run
