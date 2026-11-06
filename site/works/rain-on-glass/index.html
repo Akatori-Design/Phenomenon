@@ -2654,7 +2654,10 @@ function prewarm() {
   const { minR, maxR } = radii(), area = simW * simH / (1280 * 800);
   for (let i = 0; i < 160 * area; i++) addDrop(rand() * simW, rand() * simH, minR + (maxR * 0.8 - minR) * Math.pow(rand(), 2));
   for (let i = 0; i < 6000 * area * P.mist; i++) bead(droplets, rand() * simW, rand() * simH, (0.6 + rand() * rand() * 1.9) * S, 0.12);
-  for (let i = 0; i < 110 * area; i++) fogDrop();   // the fogged pane already has a scatter of them
+  for (let i = 0; i < 330 * area; i++) fogDrop();   // the fogged pane already has a fine scatter of them
+  // and a few drips have already run partway down the inside, each with its clear track and line of beads
+  const nDrips = Math.max(2, Math.round((3 + rand()) * area));
+  for (let i = 0; i < nDrips; i++) addDrip(simW * (0.08 + 0.84 * rand()), simH * (0.05 + 0.45 * rand()), dripR() * (1.15 + 0.35 * rand()));
   for (let i = 0; i < 300; i++) { step(1); passMist(1); }
 }
 resize();

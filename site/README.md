@@ -56,6 +56,8 @@ None of the pages show a control tray; each runs at fixed settings.
   - Inside: a fog of beaded condensation and fine micro-droplets lies over all of it and blurs the
     view. The rain never clears it; it creeps back slowly after a wipe. Now and then a small drop of
     condensation forms on it. A warm lamp in the room lights the glass from the upper left.
+    The page opens on a fog already dotted with fine drops, with a few drips that have run partway
+    down, each with its clear track and line of beads.
   - Wiping: it is the fingertip pads that wipe; the rest of the finger barely touches. They clear
     the fog, leave a thin, quickly drying streaky film, and leave drops behind (in the fingertips'
     tracks and along both edges of the band). The water they gather rides their leading edge as
