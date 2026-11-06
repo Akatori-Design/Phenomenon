@@ -68,9 +68,12 @@ None of the pages show a control tray; each runs at fixed settings.
   - Drips run down the inside, clearing a narrow track through the fog. Each leaves a line of beads
     behind it, largest at the bottom, leaning up to 10° either way.
   - The drops land gently: a soft knock (resonance 1.3–2.3 kHz) with a slow-ish attack, hardly any
-    click, everything above 5 kHz rolled off, and only a few knocks a second.
+    click, everything above 5 kHz rolled off, only a few knocks a second, and all of them quiet.
   - The view holds still under the pointer.
   - Wiping is silent: the swish and squeaks of the fingers are held at zero.
+  - Opened with `?quiet`, the page makes no sound at all; imhiro.xyz uses it for the corner peeled
+    back from its page. The page that embeds it can also quiet it at once by posting it the message
+    `"phenomenon:quiet"`, as imhiro.xyz does when it closes the full view.
   - Kept light: the out-of-focus view is blurred once per video frame into a small texture, the drop
     shading runs only where there is water, the video is uploaded straight to the GPU, and the
     picture is drawn at up to ~3.4 megapixels (the water maps at ~2.6), stepping down if frames run

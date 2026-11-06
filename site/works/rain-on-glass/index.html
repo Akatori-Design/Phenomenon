@@ -1952,9 +1952,10 @@ function stepRivulets(dt) {
 
 // ---------- sound: rain on the pane ----------
 // On by default; browsers only allow audio after the viewer interacts, so it starts on the first
-// click, tap or key press anywhere on the page.
+// click, tap or key press anywhere on the page. Opened with ?quiet it stays silent: hiro's room shows
+// the piece in a corner peeled back from its page, where it should be seen and not heard.
 let audio = null, tapBudget = 0;
-const soundOn = true;
+const soundOn = !new URLSearchParams(location.search).has('quiet');
 function initAudio() {
   const ctx = newAudioContext();
   const sr = ctx.sampleRate, master = ctx.createGain(), comp = ctx.createDynamicsCompressor();
@@ -2051,7 +2052,7 @@ function playTap(x, size, gain) {
   const s = ctx.createBufferSource(), g = ctx.createGain();
   s.buffer = taps[(Math.random() * taps.length) | 0];
   s.playbackRate.value = (1.08 - size * 0.25) * (0.92 + Math.random() * 0.16);   // bigger drops knock a little lower
-  g.gain.value = gain;
+  g.gain.value = gain * 0.5;   // the knocks on the pane are kept soft, half what they were
   let out = g;
   if (ctx.createStereoPanner) { const pn = ctx.createStereoPanner(); pn.pan.value = (x / simW * 2 - 1) * 0.75; g.connect(pn); out = pn; }
   s.connect(g); out.connect(master);
@@ -2131,6 +2132,11 @@ for (const ev of ['pointerdown', 'keydown', 'touchstart']) onPage(ev, startSound
 // that embeds this one can hand over its own permission (an iframe with allow="autoplay"), and then
 // the rain is heard as soon as the piece opens.
 startSound();
+// That page can quiet it, too, the moment it closes the piece and before it takes it away.
+addEventListener('message', (e) => {
+  if (e.source !== window.parent || e.data !== 'phenomenon:quiet' || !audio) return;
+  audio.master.gain.setTargetAtTime(0, audio.ctx.currentTime, 0.04);
+});
 
 // ---------- water on the inside of the pane ----------
 // Everything a wipe leaves on the inside of the glass (the scattered droplets, the ridges along its
