@@ -42,28 +42,41 @@ None of the pages show a control tray; each runs at fixed settings.
   section order. Tapping the wall sends a gust; the leaves rustle once the page has been tapped.
 - **Komorebi Wall** (`works/komorebi-wall/`): the piece itself, tray hidden, at the same settings.
 - **Rain on Glass**: the rain is on the outside of the pane and the condensation on the inside.
-  - Outside: the street (a 4K upscale of the original clip, played at 1.5×; 1080p on phones),
-    the raindrops and their streams. Running drops strew tiny drops that last about a minute, and
-    their trails stay on the glass after they leave the pane.
-  - Inside: a fog with a fine grain of micro-droplets lies over all of it. The rain never clears
-    it; it comes back about ten seconds after a wipe.
+  - Outside: an autumn meadow in the rain (`meadow.mp4`, a ten-second clip looped by crossfading
+    two copies; `meadow-phone.mp4` on phones). Its first frame, `meadow.jpg`, shows while the clip
+    loads, and stays for reduced motion. The near branches sway and bounce in the wind and rain;
+    the far trees barely move. The raindrops and their streams are on the outside of the pane.
+    - Half the drops come in at a slant and skid as they land, leaving a line of tiny beads above
+      the drop, tilted up to 10° either way.
+    - A drop starts to run once it is as big as the 95th percentile of the drops resting on the
+      pane, never smaller than a set floor. Runners are fast and leave small beads along their
+      track at an uneven spacing. The beads stay until there are too many, then the oldest dry away.
+    - Against the bright sky a drop reads darker: its rim is dark, and the lens shows the ground
+      below, flipped.
+  - Inside: a fog of beaded condensation and fine micro-droplets lies over all of it and blurs the
+    view. The rain never clears it; it creeps back slowly after a wipe. Now and then a small drop of
+    condensation forms on it. A warm lamp in the room lights the glass from the upper left.
   - Wiping: it is the fingertip pads that wipe; the rest of the finger barely touches. They clear
     the fog, leave a thin, quickly drying streaky film, and leave drops behind (in the fingertips'
     tracks and along both edges of the band). The water they gather rides their leading edge as
     thin lines shaped like the fingertips, staying where the wipe stops; past what it can hold,
     it drips. Wiping over earlier water pushes it together. All of it stays as the fog returns,
     evaporating only over minutes, and the raindrops outside are never touched.
-  - Drips run down the inside, clearing a narrow track through the fog and leaving tiny drops.
-  - The drops knock a little softer: the knock resonance is 1.3–2.3 kHz, the click is quieter, and
-    everything above 5 kHz is rolled off.
-  - The view holds still under the pointer, and the street video is retried twice before falling
-    back to the painted dusk street.
+  - Drips run down the inside, clearing a narrow track through the fog. Each leaves a line of beads
+    behind it, largest at the bottom, leaning up to 10° either way.
+  - The drops land gently: a soft knock (resonance 1.3–2.3 kHz) with a slow-ish attack, hardly any
+    click, everything above 5 kHz rolled off, and only a few knocks a second.
+  - The view holds still under the pointer.
+  - Kept light: the out-of-focus view is blurred once per video frame into a small texture, the drop
+    shading runs only where there is water, the video is uploaded straight to the GPU, and the
+    picture is drawn at up to ~3.4 megapixels (the water maps at ~2.6), stepping down if frames run
+    slow. At 1440×900 on a Retina screen it holds 120 fps with about 4.5 ms of GPU work a frame.
 - **Attic Light**: unchanged apart from the menu.
 
 ## Running locally
 
-Serve this folder over http, since Rain on Glass reads its street video into WebGL, and that
-doesn't work from `file://`:
+Serve this folder over http, since Rain on Glass reads its meadow into WebGL, and that doesn't
+work from `file://`:
 
 ```bash
 ruby -run -e httpd . -p 8000
