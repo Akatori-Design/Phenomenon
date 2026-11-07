@@ -57,8 +57,13 @@ None of the pages show a control tray; each runs at fixed settings.
   - Inside: a fog of beaded condensation and fine micro-droplets lies over all of it and blurs the
     view. The rain never clears it; it creeps back slowly after a wipe. Now and then a small drop of
     condensation forms on it. A warm lamp in the room lights the glass from the upper left.
-    The page opens on a fog already dotted with fine drops, with a few drips that have run partway
-    down, each with its clear track and line of beads.
+    The page opens on a fog already dotted with fine drops, with drips that have been running down
+    the inside a while (some far, some only just), each with its clear track and line of beads. The
+    fog starts lighter (80% of its setting) and thickens over the first few minutes.
+  - The room behind the viewer is mirrored faintly in the glass: a modern home office with its
+    lights on (`room.jpg`, a photograph generated with Higgsfield). Through the fog it shows only as
+    soft glows of its lights and screens; on wiped glass it is clearer. Soft streaks of glare rake
+    down the glass, and the warm pendant up to the left flares in a halo.
   - Wiping: it is the fingertip pads that wipe; the rest of the finger barely touches. They clear
     the fog, leave a thin, quickly drying streaky film, and leave drops behind (in the fingertips'
     tracks and along both edges of the band). The water they gather rides their leading edge as
@@ -76,8 +81,9 @@ None of the pages show a control tray; each runs at fixed settings.
     `"phenomenon:quiet"`, as imhiro.xyz does when it closes the full view.
   - Kept light: the out-of-focus view is blurred once per video frame into a small texture, the drop
     shading runs only where there is water, the video is uploaded straight to the GPU, and the
-    picture is drawn at up to ~3.4 megapixels (the water maps at ~2.6), stepping down if frames run
-    slow. At 1440×900 on a Retina screen it holds 120 fps with about 4.5 ms of GPU work a frame.
+    picture is drawn at up to ~2.4 megapixels (the water maps at ~2), at no more than 1.5x on a
+    phone, stepping down if frames run slow. It draws at most 60 frames a second, skipping the
+    frames between on a 90 or 120 Hz screen.
 - **Attic Light**: unchanged apart from the menu.
 
 ## Running locally

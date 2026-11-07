@@ -259,7 +259,7 @@ uniform sampler2D uBg;
 uniform sampler2D uFilm;   // thin water film on wiped glass (thickness in R)
 uniform sampler2D uBeads;  // the layout of the condensation's droplets (see BEAD_FS)
 uniform sampler2D uHaze;   // the view out of focus, blurred once per frame of the view (see HAZE_FS)
-uniform sampler2D uRoom;   // the room behind the viewer, for its reflection (see paintRoom)
+uniform sampler2D uRoom;   // the room behind the viewer, for its reflection (see roomImg)
 uniform vec2 uFilmTx;
 uniform vec2 uBgAnchor;
 uniform vec2 uTexel;
@@ -329,22 +329,24 @@ vec3 roomEnv(vec3 rd) {
   return c * (1.0 + uFlash * 3.0);
 }
 // The room behind the viewer, mirrored in the pane (and seen mostly against the dark): a modern home
-// office with its lights on (painted once into uRoom, see paintRoom), fitted to the pane like a cover
-// crop. Squared, so its dim walls stay faint while its lights and screens stand out. The fog on the
+// office with its lights on (a photograph in uRoom, see roomImg), fitted to the pane like a cover crop.
+// Faint, as a reflection in a window is by day: squared, so its dim walls all but vanish while its
+// lights and screens show. The fog on the
 // inside scatters it: it is clearest and sharpest where the glass is clear (clear = 1), dimmer and
 // blurred where it is fogged. Long soft streaks of glare rake down the glass from the lights up on the
 // left, and the warm pendant there flares in a halo.
 vec3 roomReflection(vec2 uv, float clear) {
   float A = 1.0 / uAspect;
-  vec2 sc = A > 1.6 ? vec2(1.0, 1.6 / A) : vec2(A / 1.6, 1.0);
+  const float RA = 960.0 / 537.0;   // the photograph's shape
+  vec2 sc = A > RA ? vec2(1.0, RA / A) : vec2(A / RA, 1.0);
   vec3 room = textureLod(uRoom, (uv - 0.5) * sc + 0.5, mix(3.2, 1.3, clear)).rgb;
-  vec3 c = room * room * mix(0.3, 0.75, clear);
+  vec3 c = room * room * mix(0.16, 0.42, clear);
   float g = uv.x / uAspect * 0.48 + uv.y * 0.88;
   float glare = exp(-pow((g - 1.02) / 0.08, 2.0)) * 0.6 + exp(-pow((g - 1.14) / 0.016, 2.0)) * 0.4;
-  c += vec3(0.86, 0.84, 0.8) * glare * smoothstep(0.05, 0.6, uv.y) * mix(0.1, 0.22, clear);
+  c += vec3(0.86, 0.84, 0.8) * glare * smoothstep(0.05, 0.6, uv.y) * mix(0.06, 0.13, clear);
   // the pendant's glare: a warm halo round its reflection, spread wider where the fog scatters it
-  float dl = length(((uv - 0.5) * sc + 0.5 - vec2(0.15, 0.835)) * vec2(1.6, 1.0));
-  c += vec3(1.0, 0.75, 0.48) * (exp(-dl * mix(5.0, 9.0, clear)) * 0.22 + exp(-dl * 28.0) * 0.25);
+  float dl = length(((uv - 0.5) * sc + 0.5 - vec2(0.158, 0.82)) * vec2(RA, 1.0));
+  c += vec3(1.0, 0.75, 0.48) * (exp(-dl * mix(5.0, 9.0, clear)) * 0.13 + exp(-dl * 28.0) * 0.15);
   return c;
 }
 // That warm lamp in the room also lights the glass itself: broadly, strongest nearest it (up to the
@@ -779,115 +781,27 @@ function setBackground(src, w = src.width, h = src.height) {
 setBackground(paintDusk());
 
 // The room behind the viewer, as the glass mirrors it: a modern home office on a rainy afternoon with
-// its lights on. Painted once and kept small and soft (the glass is in focus; the room, twice as far
-// off, is not), then laid over the view in the final pass (see roomReflection). Its warm pendant hangs
-// up to the left, where the lamp lighting the glass and the drops is (see lampOn and roomEnv).
-function paintRoom() {
-  const w = 1024, h = 640, c = document.createElement('canvas'); c.width = w; c.height = h;
-  const x = c.getContext('2d');
-  const R = mulberry32(17), rnd = (a, b) => a + (b - a) * R(), pick = (arr) => arr[(R() * arr.length) | 0];
-  const box = (x0, y0, x1, y1, col) => { x.fillStyle = col; x.fillRect(x0 * w, y0 * h, (x1 - x0) * w, (y1 - y0) * h); };
-  const glow = (cx, cy, r, rgb, a, sy = 1) => {
-    x.save(); x.translate(cx * w, cy * h); x.scale(1, sy);
-    const g = x.createRadialGradient(0, 0, 0, 0, 0, r);
-    g.addColorStop(0, `rgba(${rgb},${a})`); g.addColorStop(0.3, `rgba(${rgb},${a * 0.4})`); g.addColorStop(1, `rgba(${rgb},0)`);
-    x.fillStyle = g; x.fillRect(-r, -r, 2 * r, 2 * r); x.restore();
-  };
-  // the walls, warm grey and lit from above; the ceiling darker; the floor darker still
-  let g = x.createLinearGradient(0, 0, 0, h);
-  g.addColorStop(0, '#191817'); g.addColorStop(0.16, '#22201d'); g.addColorStop(0.17, '#3b352e'); g.addColorStop(0.62, '#2b2723');
-  g.addColorStop(0.785, '#201d1a'); g.addColorStop(0.79, '#121110'); g.addColorStop(1, '#0b0a09');
-  x.fillStyle = g; x.fillRect(0, 0, w, h);
-  // daylight from the tall window on the right, falling across the floor
-  glow(0.88, 0.86, 260, '150,170,195', 0.16, 0.3);
-  // the tall window: overcast light, its frame and a glazing bar, a curtain drawn back beside it
-  g = x.createLinearGradient(0, 0.2 * h, 0, 0.79 * h); g.addColorStop(0, '#7d8a98'); g.addColorStop(1, '#55606c');
-  x.fillStyle = g; x.fillRect(0.8 * w, 0.2 * h, 0.17 * w, 0.59 * h);
-  box(0.8, 0.2, 0.97, 0.212, '#1b1b1c'); box(0.8, 0.2, 0.808, 0.79, '#1b1b1c'); box(0.962, 0.2, 0.97, 0.79, '#1b1b1c');
-  box(0.882, 0.2, 0.888, 0.79, '#1b1b1c'); box(0.8, 0.46, 0.97, 0.468, '#1b1b1c');
-  box(0.765, 0.18, 0.8, 0.79, '#2e2924'); box(0.772, 0.18, 0.776, 0.79, '#3a342d');
-  // a print on the wall in a pale frame
-  box(0.27, 0.25, 0.41, 0.48, '#a8a398'); box(0.278, 0.262, 0.402, 0.468, '#6f7b74');
-  glow(0.32, 0.33, 60, '200,160,120', 0.5); glow(0.37, 0.42, 50, '70,90,110', 0.6);
-  // shelves on the left wall, books and a small plant on them
-  for (const sy of [0.36, 0.5, 0.64]) {
-    let bx = 0.035;
-    while (bx < 0.19) {
-      const bw = rnd(0.006, 0.016), bh = rnd(0.07, 0.11), lean = R() < 0.12;
-      if (R() < 0.15) { bx += rnd(0.01, 0.025); continue; }
-      x.save(); x.translate(bx * w, sy * h); if (lean) x.rotate(-0.25);
-      x.fillStyle = pick(['#5b4a3c', '#2f3a40', '#8a7a62', '#3d3530', '#a39478', '#46524a', '#6d3f35', '#c9c0ae']);
-      x.fillRect(0, -bh * h, bw * w, bh * h); x.restore();
-      bx += bw + 0.002;
-    }
-    box(0.03, sy, 0.21, sy + 0.01, '#76634e');
-  }
-  box(0.03, 0.74, 0.21, 0.75, '#76634e');
-  box(0.155, 0.235, 0.18, 0.26, '#8f8a80'); glow(0.167, 0.215, 22, '45,70,45', 1);
-  // the floor: a rug under the desk
-  x.save(); x.translate(0.6 * w, 0.89 * h); x.scale(1, 0.18); x.beginPath(); x.arc(0, 0, 0.3 * w, 0, 7); x.fillStyle = '#2b2622'; x.fill(); x.restore();
-  // the monitor's cool light on the wall behind it
-  glow(0.585, 0.5, 300, '150,180,255', 0.3);
-  // the desk: oak top catching the light, a darker edge, thin black legs
-  box(0.3, 0.665, 0.95, 0.69, '#8b7053'); box(0.3, 0.665, 0.95, 0.669, '#b59674'); box(0.3, 0.69, 0.95, 0.704, '#43352a');
-  box(0.315, 0.704, 0.322, 0.79, '#151515'); box(0.928, 0.704, 0.935, 0.79, '#151515');
-  // the monitor: a wide screen, bright, with windows open on it
-  box(0.465, 0.4, 0.705, 0.62, '#0c0c0e');
-  g = x.createLinearGradient(0, 0.41 * h, 0, 0.61 * h); g.addColorStop(0, '#dbe7ff'); g.addColorStop(1, '#a9c0ea');
-  x.fillStyle = g; x.fillRect(0.47 * w, 0.408 * h, 0.23 * w, 0.204 * h);
-  box(0.47, 0.408, 0.505, 0.612, '#34405a'); box(0.515, 0.43, 0.6, 0.53, '#f4f7ff'); box(0.61, 0.43, 0.69, 0.5, '#7f95c4');
-  box(0.515, 0.545, 0.69, 0.555, '#8fa3cd'); box(0.515, 0.565, 0.66, 0.575, '#8fa3cd'); box(0.61, 0.51, 0.69, 0.53, '#c7d4f2');
-  box(0.578, 0.62, 0.592, 0.666, '#2a2a2c'); box(0.55, 0.661, 0.62, 0.667, '#2f2f31');
-  glow(0.585, 0.51, 120, '200,220,255', 0.35);
-  // a laptop open beside it
-  box(0.735, 0.565, 0.82, 0.652, '#121214'); box(0.739, 0.57, 0.816, 0.648, '#e3ebff'); box(0.739, 0.57, 0.758, 0.648, '#5d6c8f');
-  box(0.725, 0.652, 0.83, 0.662, '#a3a3a8');
-  glow(0.778, 0.61, 70, '200,215,255', 0.3);
-  // the desk lamp: a dark arm, a bright head, and the warm pool of light it throws on the desk
-  x.strokeStyle = '#1a1a1a'; x.lineWidth = 6; x.lineCap = 'round';
-  x.beginPath(); x.moveTo(0.35 * w, 0.662 * h); x.lineTo(0.37 * w, 0.48 * h); x.lineTo(0.42 * w, 0.52 * h); x.stroke();
-  box(0.335, 0.658, 0.365, 0.666, '#1a1a1a');
-  x.save(); x.translate(0.425 * w, 0.53 * h); x.rotate(0.5); x.fillStyle = '#202020'; x.fillRect(-26, -12, 52, 22); x.fillStyle = '#fff3d8'; x.fillRect(-22, 8, 44, 4); x.restore();
-  glow(0.43, 0.67, 150, '255,196,130', 0.5, 0.3); glow(0.428, 0.548, 60, '255,225,180', 0.9);
-  // the chair, nearer and darker, rimmed by the screen's light
-  x.fillStyle = '#111112';
-  x.beginPath(); x.roundRect(0.5 * w, 0.55 * h, 0.13 * w, 0.22 * h, 18); x.fill();
-  box(0.485, 0.755, 0.645, 0.8, '#111112'); box(0.562, 0.8, 0.572, 0.9, '#161616'); box(0.5, 0.9, 0.635, 0.915, '#161616');
-  x.strokeStyle = 'rgba(120,140,190,.5)'; x.lineWidth = 2; x.beginPath(); x.roundRect(0.5 * w, 0.55 * h, 0.13 * w, 0.22 * h, 18); x.stroke();
-  // a tall plant in a white pot
-  box(0.232, 0.7, 0.278, 0.79, '#8f8a80');
-  for (let i = 0; i < 14; i++) {
-    x.save(); x.translate(0.255 * w, 0.71 * h); x.rotate(rnd(-1.1, 1.1));
-    x.fillStyle = pick(['#1d281d', '#2a3828', '#233023']);
-    x.beginPath(); x.ellipse(0, -rnd(60, 160), rnd(10, 18), rnd(40, 70), 0, 0, 7); x.fill(); x.restore();
-  }
-  // the lights: a warm pendant up to the left, and a row of downlights in the ceiling washing the wall
-  x.strokeStyle = '#0e0e0e'; x.lineWidth = 2; x.beginPath(); x.moveTo(0.15 * w, 0); x.lineTo(0.15 * w, 0.13 * h); x.stroke();
-  glow(0.15, 0.17, 380, '255,190,120', 0.22); glow(0.15, 0.17, 150, '255,210,160', 0.6);
-  x.beginPath(); x.arc(0.15 * w, 0.165 * h, 26, Math.PI, 0); x.fillStyle = '#2a2622'; x.fill();
-  x.beginPath(); x.ellipse(0.15 * w, 0.165 * h, 24, 7, 0, 0, 7); x.fillStyle = '#fff4e0'; x.fill();
-  for (const dx of [0.34, 0.58, 0.82]) {
-    glow(dx, 0.32, 170, '255,232,200', 0.1, 1.6);
-    glow(dx, 0.045, 90, '255,240,215', 0.55, 0.6);
-    x.beginPath(); x.ellipse(dx * w, 0.045 * h, 15, 5, 0, 0, 7); x.fillStyle = '#fffaf0'; x.fill();
-  }
-  // softened: drawn down small, so the glass shows it out of focus
-  const s = document.createElement('canvas'); s.width = 384; s.height = 240;
-  const sx = s.getContext('2d'); sx.imageSmoothingQuality = 'high'; sx.drawImage(c, 0, 0, s.width, s.height);
-  return s;
-}
+// its lights on, a photograph (room.jpg) kept small, since the glass is in focus and the room, twice as
+// far off, is not. It is laid over the view in the final pass (see roomReflection); until it has loaded
+// the glass mirrors nothing. Its warm globe pendant hangs up to the left, where the lamp lighting the
+// glass and the drops is (see lampOn and roomEnv).
 const roomTex = gl.createTexture();
-{
+gl.bindTexture(gl.TEXTURE_2D, roomTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+const roomImg = new Image();
+roomImg.onload = () => {
   gl.bindTexture(gl.TEXTURE_2D, roomTex);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, paintRoom());
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, roomImg);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   gl.generateMipmap(gl.TEXTURE_2D);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-}
+};
+roomImg.src = 'room.jpg';
 
 // A video behind the glass. Two copies of the clip play in turn: as one nears its end the other
 // starts from the beginning and the two crossfade, so the loop has no visible jump. The mix is
