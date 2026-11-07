@@ -58,6 +58,12 @@ const rainCurve = (v) => (v <= 0.5 ? v * 0.5 : 0.25 + (v - 0.5) * 1.5);
 const START = { rain: reduced ? 0.3 : 0.65, mist: 0, refract: 0.43, fog: 0.42, humid: 0.5 };
 const P = {}, SL = {};   // P: values the simulation uses; SL: slider positions (0–1), with rainfall run through rainCurve
 for (const k of Object.keys(MID)) { SL[k] = k === 'rain' ? rainCurve(START[k]) : START[k]; P[k] = fromSlider(k, SL[k]); }
+// The fog on the inside starts out lighter (80% of the fog setting) and thickens as the room's warmth
+// goes on meeting the cold glass: halfway there in about a minute and nearly all the way in four, until
+// it is as thick as the fog slider's tuned midpoint. Counted in frames of the simulation (see clock).
+const FOG_START = P.fog * 0.8, FOG_FULL = MID.fog, FOG_T = 80 * 60;
+const fogNow = () => FOG_FULL + (FOG_START - FOG_FULL) * Math.exp(-clock / FOG_T);
+P.fog = FOG_START;
 
 // ---------- GL helpers ----------
 function shader(type, src) {
@@ -253,6 +259,7 @@ uniform sampler2D uBg;
 uniform sampler2D uFilm;   // thin water film on wiped glass (thickness in R)
 uniform sampler2D uBeads;  // the layout of the condensation's droplets (see BEAD_FS)
 uniform sampler2D uHaze;   // the view out of focus, blurred once per frame of the view (see HAZE_FS)
+uniform sampler2D uRoom;   // the room behind the viewer, for its reflection (see paintRoom)
 uniform vec2 uFilmTx;
 uniform vec2 uBgAnchor;
 uniform vec2 uTexel;
@@ -321,11 +328,24 @@ vec3 roomEnv(vec3 rd) {
   c += vec3(1.5, 1.2, 0.85) * pow(max(dot(rd, L), 0.0), 30.0);
   return c * (1.0 + uFlash * 3.0);
 }
-// A faint reflection of the room behind the viewer on the glass: a warm lamp up to the left.
-vec3 roomReflection(vec2 uv) {
-  vec2 d = (uv - vec2(0.16, 0.82)) * vec2(1.0 / uAspect, 1.0);
-  float lamp = exp(-dot(d, d) * 9.0);
-  return vec3(1.0, 0.78, 0.52) * (lamp * 0.14 + 0.012) + vec3(0.6, 0.65, 0.75) * 0.01 * uv.y;
+// The room behind the viewer, mirrored in the pane (and seen mostly against the dark): a modern home
+// office with its lights on (painted once into uRoom, see paintRoom), fitted to the pane like a cover
+// crop. Squared, so its dim walls stay faint while its lights and screens stand out. The fog on the
+// inside scatters it: it is clearest and sharpest where the glass is clear (clear = 1), dimmer and
+// blurred where it is fogged. Long soft streaks of glare rake down the glass from the lights up on the
+// left, and the warm pendant there flares in a halo.
+vec3 roomReflection(vec2 uv, float clear) {
+  float A = 1.0 / uAspect;
+  vec2 sc = A > 1.6 ? vec2(1.0, 1.6 / A) : vec2(A / 1.6, 1.0);
+  vec3 room = textureLod(uRoom, (uv - 0.5) * sc + 0.5, mix(3.2, 1.3, clear)).rgb;
+  vec3 c = room * room * mix(0.3, 0.75, clear);
+  float g = uv.x / uAspect * 0.48 + uv.y * 0.88;
+  float glare = exp(-pow((g - 1.02) / 0.08, 2.0)) * 0.6 + exp(-pow((g - 1.14) / 0.016, 2.0)) * 0.4;
+  c += vec3(0.86, 0.84, 0.8) * glare * smoothstep(0.05, 0.6, uv.y) * mix(0.1, 0.22, clear);
+  // the pendant's glare: a warm halo round its reflection, spread wider where the fog scatters it
+  float dl = length(((uv - 0.5) * sc + 0.5 - vec2(0.15, 0.835)) * vec2(1.6, 1.0));
+  c += vec3(1.0, 0.75, 0.48) * (exp(-dl * mix(5.0, 9.0, clear)) * 0.22 + exp(-dl * 28.0) * 0.25);
+  return c;
 }
 // That warm lamp in the room also lights the glass itself: broadly, strongest nearest it (up to the
 // left) and falling away across the pane. The fog and every drop catch its light.
@@ -520,7 +540,7 @@ if (fogV > 0.01) {   // only where there is fog to see
     cond = mix(cond, roomEnv(reflect(vec3(0.0, 0.0, -1.0), mn)), clamp(mfres * 1.6, 0.0, 0.85));
     col = mix(col, cond, mMask);
   }
-  col += roomReflection(uv) * (1.0 - 0.6 * dot(col, vec3(0.333)));   // seen mostly against the dark
+  col += roomReflection(uv, 1.0 - fog) * (1.0 - 0.6 * dot(col, vec3(0.333)));   // seen mostly against the dark
   float v = length((uv - 0.5) * vec2(1.0, 0.9));
   col *= mix(1.0, 0.72, smoothstep(0.4, 0.9, v));
   o = vec4(col, 1.0);
@@ -609,7 +629,7 @@ void main() {
 const blob = program(BLOB_VS, BLOB_FS, blob_names);
 const fill = program(QUAD_VS, FILL_FS, ['uColor']);
 const filmP = program(QUAD_VS, FILM_FS, ['uF', 'uTx', 'uDt']);
-const fin = program(QUAD_VS, FINAL_FS, ['uWater', 'uMist', 'uBg', 'uFilm', 'uBeads', 'uFilmTx', 'uBgAnchor', 'uTexel', 'uBgScale', 'uBgSize', 'uAspect', 'uRefract', 'uFog', 'uLod', 'uTime', 'uRainOut', 'uWind', 'uFlash', 'uWdpr', 'uHcap', 'uHaze']);
+const fin = program(QUAD_VS, FINAL_FS, ['uWater', 'uMist', 'uBg', 'uFilm', 'uBeads', 'uFilmTx', 'uBgAnchor', 'uTexel', 'uBgScale', 'uBgSize', 'uAspect', 'uRefract', 'uFog', 'uLod', 'uTime', 'uRainOut', 'uWind', 'uFlash', 'uWdpr', 'uHcap', 'uHaze', 'uRoom']);
 const hazeP = program(QUAD_VS, HAZE_FS, ['uBg', 'uBgSize', 'uLod']);
 const beadP = program(QUAD_VS, BEAD_FS, ['uView']);
 
@@ -758,6 +778,117 @@ function setBackground(src, w = src.width, h = src.height) {
 }
 setBackground(paintDusk());
 
+// The room behind the viewer, as the glass mirrors it: a modern home office on a rainy afternoon with
+// its lights on. Painted once and kept small and soft (the glass is in focus; the room, twice as far
+// off, is not), then laid over the view in the final pass (see roomReflection). Its warm pendant hangs
+// up to the left, where the lamp lighting the glass and the drops is (see lampOn and roomEnv).
+function paintRoom() {
+  const w = 1024, h = 640, c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  const R = mulberry32(17), rnd = (a, b) => a + (b - a) * R(), pick = (arr) => arr[(R() * arr.length) | 0];
+  const box = (x0, y0, x1, y1, col) => { x.fillStyle = col; x.fillRect(x0 * w, y0 * h, (x1 - x0) * w, (y1 - y0) * h); };
+  const glow = (cx, cy, r, rgb, a, sy = 1) => {
+    x.save(); x.translate(cx * w, cy * h); x.scale(1, sy);
+    const g = x.createRadialGradient(0, 0, 0, 0, 0, r);
+    g.addColorStop(0, `rgba(${rgb},${a})`); g.addColorStop(0.3, `rgba(${rgb},${a * 0.4})`); g.addColorStop(1, `rgba(${rgb},0)`);
+    x.fillStyle = g; x.fillRect(-r, -r, 2 * r, 2 * r); x.restore();
+  };
+  // the walls, warm grey and lit from above; the ceiling darker; the floor darker still
+  let g = x.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#191817'); g.addColorStop(0.16, '#22201d'); g.addColorStop(0.17, '#3b352e'); g.addColorStop(0.62, '#2b2723');
+  g.addColorStop(0.785, '#201d1a'); g.addColorStop(0.79, '#121110'); g.addColorStop(1, '#0b0a09');
+  x.fillStyle = g; x.fillRect(0, 0, w, h);
+  // daylight from the tall window on the right, falling across the floor
+  glow(0.88, 0.86, 260, '150,170,195', 0.16, 0.3);
+  // the tall window: overcast light, its frame and a glazing bar, a curtain drawn back beside it
+  g = x.createLinearGradient(0, 0.2 * h, 0, 0.79 * h); g.addColorStop(0, '#7d8a98'); g.addColorStop(1, '#55606c');
+  x.fillStyle = g; x.fillRect(0.8 * w, 0.2 * h, 0.17 * w, 0.59 * h);
+  box(0.8, 0.2, 0.97, 0.212, '#1b1b1c'); box(0.8, 0.2, 0.808, 0.79, '#1b1b1c'); box(0.962, 0.2, 0.97, 0.79, '#1b1b1c');
+  box(0.882, 0.2, 0.888, 0.79, '#1b1b1c'); box(0.8, 0.46, 0.97, 0.468, '#1b1b1c');
+  box(0.765, 0.18, 0.8, 0.79, '#2e2924'); box(0.772, 0.18, 0.776, 0.79, '#3a342d');
+  // a print on the wall in a pale frame
+  box(0.27, 0.25, 0.41, 0.48, '#a8a398'); box(0.278, 0.262, 0.402, 0.468, '#6f7b74');
+  glow(0.32, 0.33, 60, '200,160,120', 0.5); glow(0.37, 0.42, 50, '70,90,110', 0.6);
+  // shelves on the left wall, books and a small plant on them
+  for (const sy of [0.36, 0.5, 0.64]) {
+    let bx = 0.035;
+    while (bx < 0.19) {
+      const bw = rnd(0.006, 0.016), bh = rnd(0.07, 0.11), lean = R() < 0.12;
+      if (R() < 0.15) { bx += rnd(0.01, 0.025); continue; }
+      x.save(); x.translate(bx * w, sy * h); if (lean) x.rotate(-0.25);
+      x.fillStyle = pick(['#5b4a3c', '#2f3a40', '#8a7a62', '#3d3530', '#a39478', '#46524a', '#6d3f35', '#c9c0ae']);
+      x.fillRect(0, -bh * h, bw * w, bh * h); x.restore();
+      bx += bw + 0.002;
+    }
+    box(0.03, sy, 0.21, sy + 0.01, '#76634e');
+  }
+  box(0.03, 0.74, 0.21, 0.75, '#76634e');
+  box(0.155, 0.235, 0.18, 0.26, '#8f8a80'); glow(0.167, 0.215, 22, '45,70,45', 1);
+  // the floor: a rug under the desk
+  x.save(); x.translate(0.6 * w, 0.89 * h); x.scale(1, 0.18); x.beginPath(); x.arc(0, 0, 0.3 * w, 0, 7); x.fillStyle = '#2b2622'; x.fill(); x.restore();
+  // the monitor's cool light on the wall behind it
+  glow(0.585, 0.5, 300, '150,180,255', 0.3);
+  // the desk: oak top catching the light, a darker edge, thin black legs
+  box(0.3, 0.665, 0.95, 0.69, '#8b7053'); box(0.3, 0.665, 0.95, 0.669, '#b59674'); box(0.3, 0.69, 0.95, 0.704, '#43352a');
+  box(0.315, 0.704, 0.322, 0.79, '#151515'); box(0.928, 0.704, 0.935, 0.79, '#151515');
+  // the monitor: a wide screen, bright, with windows open on it
+  box(0.465, 0.4, 0.705, 0.62, '#0c0c0e');
+  g = x.createLinearGradient(0, 0.41 * h, 0, 0.61 * h); g.addColorStop(0, '#dbe7ff'); g.addColorStop(1, '#a9c0ea');
+  x.fillStyle = g; x.fillRect(0.47 * w, 0.408 * h, 0.23 * w, 0.204 * h);
+  box(0.47, 0.408, 0.505, 0.612, '#34405a'); box(0.515, 0.43, 0.6, 0.53, '#f4f7ff'); box(0.61, 0.43, 0.69, 0.5, '#7f95c4');
+  box(0.515, 0.545, 0.69, 0.555, '#8fa3cd'); box(0.515, 0.565, 0.66, 0.575, '#8fa3cd'); box(0.61, 0.51, 0.69, 0.53, '#c7d4f2');
+  box(0.578, 0.62, 0.592, 0.666, '#2a2a2c'); box(0.55, 0.661, 0.62, 0.667, '#2f2f31');
+  glow(0.585, 0.51, 120, '200,220,255', 0.35);
+  // a laptop open beside it
+  box(0.735, 0.565, 0.82, 0.652, '#121214'); box(0.739, 0.57, 0.816, 0.648, '#e3ebff'); box(0.739, 0.57, 0.758, 0.648, '#5d6c8f');
+  box(0.725, 0.652, 0.83, 0.662, '#a3a3a8');
+  glow(0.778, 0.61, 70, '200,215,255', 0.3);
+  // the desk lamp: a dark arm, a bright head, and the warm pool of light it throws on the desk
+  x.strokeStyle = '#1a1a1a'; x.lineWidth = 6; x.lineCap = 'round';
+  x.beginPath(); x.moveTo(0.35 * w, 0.662 * h); x.lineTo(0.37 * w, 0.48 * h); x.lineTo(0.42 * w, 0.52 * h); x.stroke();
+  box(0.335, 0.658, 0.365, 0.666, '#1a1a1a');
+  x.save(); x.translate(0.425 * w, 0.53 * h); x.rotate(0.5); x.fillStyle = '#202020'; x.fillRect(-26, -12, 52, 22); x.fillStyle = '#fff3d8'; x.fillRect(-22, 8, 44, 4); x.restore();
+  glow(0.43, 0.67, 150, '255,196,130', 0.5, 0.3); glow(0.428, 0.548, 60, '255,225,180', 0.9);
+  // the chair, nearer and darker, rimmed by the screen's light
+  x.fillStyle = '#111112';
+  x.beginPath(); x.roundRect(0.5 * w, 0.55 * h, 0.13 * w, 0.22 * h, 18); x.fill();
+  box(0.485, 0.755, 0.645, 0.8, '#111112'); box(0.562, 0.8, 0.572, 0.9, '#161616'); box(0.5, 0.9, 0.635, 0.915, '#161616');
+  x.strokeStyle = 'rgba(120,140,190,.5)'; x.lineWidth = 2; x.beginPath(); x.roundRect(0.5 * w, 0.55 * h, 0.13 * w, 0.22 * h, 18); x.stroke();
+  // a tall plant in a white pot
+  box(0.232, 0.7, 0.278, 0.79, '#8f8a80');
+  for (let i = 0; i < 14; i++) {
+    x.save(); x.translate(0.255 * w, 0.71 * h); x.rotate(rnd(-1.1, 1.1));
+    x.fillStyle = pick(['#1d281d', '#2a3828', '#233023']);
+    x.beginPath(); x.ellipse(0, -rnd(60, 160), rnd(10, 18), rnd(40, 70), 0, 0, 7); x.fill(); x.restore();
+  }
+  // the lights: a warm pendant up to the left, and a row of downlights in the ceiling washing the wall
+  x.strokeStyle = '#0e0e0e'; x.lineWidth = 2; x.beginPath(); x.moveTo(0.15 * w, 0); x.lineTo(0.15 * w, 0.13 * h); x.stroke();
+  glow(0.15, 0.17, 380, '255,190,120', 0.22); glow(0.15, 0.17, 150, '255,210,160', 0.6);
+  x.beginPath(); x.arc(0.15 * w, 0.165 * h, 26, Math.PI, 0); x.fillStyle = '#2a2622'; x.fill();
+  x.beginPath(); x.ellipse(0.15 * w, 0.165 * h, 24, 7, 0, 0, 7); x.fillStyle = '#fff4e0'; x.fill();
+  for (const dx of [0.34, 0.58, 0.82]) {
+    glow(dx, 0.32, 170, '255,232,200', 0.1, 1.6);
+    glow(dx, 0.045, 90, '255,240,215', 0.55, 0.6);
+    x.beginPath(); x.ellipse(dx * w, 0.045 * h, 15, 5, 0, 0, 7); x.fillStyle = '#fffaf0'; x.fill();
+  }
+  // softened: drawn down small, so the glass shows it out of focus
+  const s = document.createElement('canvas'); s.width = 384; s.height = 240;
+  const sx = s.getContext('2d'); sx.imageSmoothingQuality = 'high'; sx.drawImage(c, 0, 0, s.width, s.height);
+  return s;
+}
+const roomTex = gl.createTexture();
+{
+  gl.bindTexture(gl.TEXTURE_2D, roomTex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, paintRoom());
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+}
+
 // A video behind the glass. Two copies of the clip play in turn: as one nears its end the other
 // starts from the beginning and the two crossfade, so the loop has no visible jump. The mix is
 // drawn into a canvas, which becomes the background texture.
@@ -855,20 +986,23 @@ function bakeBeads() {
   gl.bindVertexArray(vaoQuad); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 }
 let simW = 0, simH = 0, S = 1, D = null, W = null, F = [null, null], Bk = null;
-// The picture is drawn at the screen's pixel density up to a budget of pixels (about 1.5x on a laptop
-// screen), and the budget comes down if frames run slow (see frame).
-let canvasPx = 3.4e6;
+// The picture is drawn at the screen's pixel density up to a budget of pixels (about 1.35x on a laptop
+// screen), and the budget comes down if frames run slow (see frame). Rain seen through fog is soft, so
+// this is plenty: the cost of every frame grows with these pixels. A phone, its screen small and dense,
+// is drawn at no more than 1.5x.
+let canvasPx = 2.4e6;
+const dprCap = () => Math.min(devicePixelRatio || 1, simW < 640 ? 1.5 : 2);
 function sizeCanvas() {
-  const k = Math.min(Math.min(devicePixelRatio || 1, 2), Math.sqrt(canvasPx / (simW * simH)));
+  const k = Math.min(dprCap(), Math.sqrt(canvasPx / (simW * simH)));
   canvas.width = Math.round(simW * k); canvas.height = Math.round(simH * k);
 }
 function resize() {
-  const dpr = Math.min(devicePixelRatio || 1, 2);
   simW = Math.max(1, Math.round(viewW())); simH = Math.max(1, Math.round(viewH()));
+  const dpr = dprCap();
   S = Math.max(0.6, Math.min(1.4, Math.min(simW, simH) / 820));
   sizeCanvas();
-  // the water is drawn at the screen's pixel density, up to ~2.6 megapixels
-  const wd = Math.max(1, Math.min(dpr, Math.sqrt(2.6e6 / (simW * simH))));
+  // the water is drawn at the screen's pixel density, up to ~2 megapixels
+  const wd = Math.max(1, Math.min(dpr, Math.sqrt(2e6 / (simW * simH))));
   const tw = Math.round(simW * wd), th = Math.round(simH * wd);
   if (!D || D.w !== tw || D.h !== th) {
     if (D) { freeTarget(D); freeTarget(W); freeTarget(F[0]); freeTarget(F[1]); freeTarget(Bk); }
@@ -2196,7 +2330,7 @@ const dripR = () => 2.8 * S * (viewW() < 640 ? 1.6 : 1);   // an inside drop thi
 function addDrip(x, y, r) {
   r = Math.min(r, dripR() * 1.6);   // drips on the inside stay small
   // each runs straight, leaning up to 10° to one side or the other
-  if (drips.length < 10) drips.push({ x, y, r, vy: 0.15 * S, slope: Math.tan((rand() * 2 - 1) * 10 * Math.PI / 180), run: 0, fine: 0, stuck: 0, seed: rand() * 6.283 });
+  if (drips.length < 18) drips.push({ x, y, r, vy: 0.15 * S, slope: Math.tan((rand() * 2 - 1) * 10 * Math.PI / 180), run: 0, fine: 0, stuck: 0, seed: rand() * 6.283 });
   else lay(x, y, r);
 }
 function stepDrips(dt) {
@@ -2643,8 +2777,9 @@ function passFinal() {
   gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, F[0].tex);
   gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, Bk.tex);
   gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, Hz.tex);
+  gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, roomTex);
   const u = fin.u;
-  gl.uniform1i(u.uWater, 0); gl.uniform1i(u.uMist, 1); gl.uniform1i(u.uBg, 2); gl.uniform1i(u.uFilm, 3); gl.uniform1i(u.uBeads, 4); gl.uniform1i(u.uHaze, 5);
+  gl.uniform1i(u.uWater, 0); gl.uniform1i(u.uMist, 1); gl.uniform1i(u.uBg, 2); gl.uniform1i(u.uFilm, 3); gl.uniform1i(u.uBeads, 4); gl.uniform1i(u.uHaze, 5); gl.uniform1i(u.uRoom, 6);
   gl.uniform2f(u.uFilmTx, 1 / F[0].w, 1 / F[0].h);
   gl.uniform2f(u.uBgAnchor, 0.5, 0.5);   // the view is centred
   gl.uniform2f(u.uTexel, 1 / W.w, 1 / W.h);
@@ -2674,10 +2809,14 @@ function prewarm() {
   for (let i = 0; i < 160 * area; i++) addDrop(rand() * simW, rand() * simH, minR + (maxR * 0.8 - minR) * Math.pow(rand(), 2));
   for (let i = 0; i < 6000 * area * P.mist; i++) bead(droplets, rand() * simW, rand() * simH, (0.6 + rand() * rand() * 1.9) * S, 0.12);
   for (let i = 0; i < 330 * area; i++) fogDrop();   // the fogged pane already has a fine scatter of them
-  // and a few drips have already run partway down the inside, each with its clear track and line of beads
-  const nDrips = Math.max(2, Math.round((3 + rand()) * area));
-  for (let i = 0; i < nDrips; i++) addDrip(simW * (0.08 + 0.84 * rand()), simH * (0.05 + 0.45 * rand()), dripR() * (1.15 + 0.35 * rand()));
-  for (let i = 0; i < 300; i++) { step(1); passMist(1); }
+  // and drips have been running down the inside for a while, each leaving its clear track and line of
+  // beads: some set off long ago and have run far, some only just
+  const nDrips = Math.max(6, Math.round((10 + 4 * rand()) * area)), starts = [];
+  for (let i = 0; i < nDrips; i++) starts.push({ at: Math.floor(rand() * 280), x: simW * (0.05 + 0.9 * rand()), y: simH * (0.02 + 0.5 * rand()) });
+  for (let i = 0; i < 300; i++) {
+    for (const d of starts) if (d.at === i) addDrip(d.x, d.y, dripR() * (1.15 + 0.35 * rand()));
+    step(1); passMist(1);
+  }
 }
 resize();
 prewarm();
@@ -2685,8 +2824,13 @@ prewarm();
 let resizeT = 0;
 onPage('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(resize, 120); });
 
-let last = performance.now(), slowT = 0, slowN = 0;
+let last = performance.now(), slowT = 0, slowN = 0, prevT = last, owe = 0;
 function frame(now) {
+  // At most 60 frames a second: on a faster screen (90 or 120 Hz) more would only multiply the work for
+  // nothing anyone sees in rain, so the frames between are skipped, keeping an even 60.
+  owe += now - prevT; prevT = now;
+  if (warmed && owe < 12) { nextFrame(frame); return; }
+  owe = Math.max(0, Math.min(owe - 16.667, 16.667));
   const dt = Math.min(Math.max((now - last) / 16.667, 0.2), 3) * (reduced ? 0.6 : 1);
   // if frames keep running slower than ~45 a second, draw the picture with fewer pixels
   if (warmed && now - last < 250) {
@@ -2697,6 +2841,7 @@ function frame(now) {
   if (viewW() > 0 && viewH() > 0 && (Math.round(viewW()) !== simW || Math.round(viewH()) !== simH)) resize();
   if (!warmed) prewarm();
   if (!paused) step(dt);
+  P.fog = fogNow();
   stepSound(dt);
   passMist(paused ? 0 : dt);
   passWater();
