@@ -211,10 +211,10 @@ void main() {
   } else if (uMode == 1) {
     o = vec4(0.0, 0.0, 0.0, 1.0 - smoothstep(0.55, 1.0, 1.0 + s / r1));
   } else {
-    // Finger contact, like a fingerprint: it is the pad at the tip (p0 = 1) that wipes, pressing
-    // flat and clearing the glass all but fully; the rest of the finger (p0 = 0.5) barely touches,
-    // clearing a little just below the pad and nothing toward the palm. A soft rim, so the stamps along a stroke merge into one
-    // band and never print the finger's outline.
+    // Finger contact, like a fingerprint: a pressing part (p0 above 0.75: the pad at the tip, or a finger
+    // pressed flat in a fast sweep) clears the glass all but fully; a part that only rests on it (p0
+    // lower) clears a little just below the pad and nothing toward the palm. A soft rim, so the stamps
+    // along a stroke merge into one band and never print the finger's outline.
     float d = 1.0 + s / max(r1, r2);
     float along = clamp(vL.y / max(h, 1e-3), 0.0, 1.0);   // 0 at the end nearer the palm, 1 toward the fingertip
     float press = vB.z > 0.75 ? mix(0.9, 1.0, along) : 0.25 * along * along;
@@ -941,7 +941,7 @@ function resize() {
     clearTarget(F[0], [0, 0, 0, 0]); clearTarget(F[1], [0, 0, 0, 0]);
   }
   for (const d of drops) if (d.x > simW + d.r || d.y > simH + d.r) d.dead = true;
-  hand = handGeom();
+  hands.clear(); hand = handGeom(0);
   resetWipeGrid();
 }
 
@@ -2253,10 +2253,13 @@ function pruneInWater() {
 // it up again.
 const drips = [];
 const dripR = () => 2.8 * S * (viewW() < 640 ? 1.6 : 1);   // an inside drop this big, or bigger, may run
-function addDrip(x, y, r) {
-  r = Math.min(r, dripR() * 1.6);   // drips on the inside stay small
+// How heavy the water a wipe has gathered is: 0 for a dab, toward 1 once it has wiped through a lot of
+// fog. Heavier water leaves bigger drops and lets heavier drips run.
+const heavy = () => stroke ? 1 - Math.exp(-stroke.got / 220) : 0;
+function addDrip(x, y, r, cap = 1.6) {
+  r = Math.min(r, dripR() * cap);   // drips on the inside stay small, unless a wipe gathered a lot of water
   // each runs straight, leaning up to 10° to one side or the other
-  if (drips.length < 18) drips.push({ x, y, r, vy: 0.15 * S, slope: Math.tan((rand() * 2 - 1) * 10 * Math.PI / 180), run: 0, fine: 0, stuck: 0, seed: rand() * 6.283 });
+  if (drips.length < 18) drips.push({ x, y, r, cap: Math.max(1.7, cap), vy: 0.15 * S, slope: Math.tan((rand() * 2 - 1) * 10 * Math.PI / 180), run: 0, fine: 0, stuck: 0, seed: rand() * 6.283 });
   else lay(x, y, r);
 }
 function stepDrips(dt) {
@@ -2272,13 +2275,13 @@ function stepDrips(dt) {
     // two drips that touch run on as one
     for (let j = i - 1; j >= 0; j--) {
       const o = drips[j];
-      if (Math.hypot(o.x - d.x, o.y - d.y) < (o.r + d.r) * 0.9) { d.r = Math.min(dripR() * 1.7, Math.cbrt(d.r ** 3 + o.r ** 3)); d.y = Math.max(d.y, o.y); drips.splice(j, 1); i--; }
+      if (Math.hypot(o.x - d.x, o.y - d.y) < (o.r + d.r) * 0.9) { d.r = Math.min(dripR() * Math.max(d.cap, o.cap), Math.cbrt(d.r ** 3 + o.r ** 3)); d.cap = Math.max(d.cap, o.cap); d.y = Math.max(d.y, o.y); drips.splice(j, 1); i--; }
     }
     // it takes in the water lying in its way, and grows by it
     for (let j = inWater.length - 1; j >= 0; j--) {
       const q = inWater[j];
       if (Math.abs(q.x - d.x) < d.r * 1.2 && q.y > py - d.r * 1.2 && q.y < d.y + d.r * 1.2) {
-        d.r = Math.min(dripR() * 1.7, Math.cbrt(d.r ** 3 + q.v));
+        d.r = Math.min(dripR() * d.cap, Math.cbrt(d.r ** 3 + q.v));
         inWater[j] = inWater[inWater.length - 1]; inWater.pop();
       }
     }
@@ -2313,17 +2316,32 @@ function stepDrips(dt) {
 // were. It never wipes perfectly clean: the fingers take up the condensation they cross and the
 // water left there before, push it along their leading edge as a thin line, and leave some of it
 // behind them as droplets, more in the tracks of the fingertips and along the edges of the band.
-// Only the tip of one finger touches the glass: a short, rounded pad.
-// Hand frame: origin at the fingertip, +y toward the palm.
+// A slow or short wipe is one fingertip on the glass: a short, rounded pad. A fast, wide sweep brings
+// the hand down: three fingers lie flat on the glass, their tips pressing firmly and the rest of each
+// finger lightly, and as the hand slows it lifts back to one fingertip (see spreadHand).
+// Hand frame: origin at the middle fingertip, +y toward the palm.
 let hand = null, stroke = null, lastPt = null, handA = 0, sway = 0;
 const pt = (e) => ({ x: localX(e), y: localY(e) });
-const TIP = 1;   // share of the touching length that is firm pad: all of it, since only the tip touches
 
-function handGeom() {
-  // one fingertip wipes, barely longer than it is wide; on a phone-sized pane it is a thumb's, broader
+// The hand at a given spread: 0 is one fingertip (on a phone a thumb's, broader); 1 is three
+// fingertips side by side, the middle one furthest forward. Between, the outer two slide out from
+// under the middle one. Worked out for nine steps of spread and kept.
+const hands = new Map();
+function handGeom(spread = 0) {
+  const k = Math.round(Math.max(0, Math.min(1, spread)) * 8);
+  if (!hands.has(k)) hands.set(k, makeHand(k / 8));
+  return hands.get(k);
+}
+function makeHand(sp) {
   const thumb = viewW() < 640;
-  const w = (thumb ? 80 : 46) * S, g = 5 * S, L = (thumb ? 0.3 : 0.2) * w;
+  const one = (thumb ? 80 : 46) * S, three = (thumb ? 40 : 38) * S;   // a single tip is broader than each of three
+  const w = one + (three - one) * sp, g = 5 * S;
+  // the length on the glass: the tip alone, growing to the whole finger lying flat (2.3 widths), of
+  // which the firm pad at the tip is all at first and 42% once the finger is down
+  const L = w * ((thumb ? 0.3 : 0.2) + ((thumb ? 1.4 : 2.3) - (thumb ? 0.3 : 0.2)) * sp);
+  const t0 = thumb ? 0.3 : 0.2, pad = w * (t0 + ((thumb ? 1.4 : 2.3) * 0.42 - t0) * sp), TIP = Math.min(1, pad / L);
   const fingers = [{ x: 0, tip: 0 }];
+  if (sp > 0) fingers.push({ x: -(w + g) * sp, tip: 0.3 * w * sp }, { x: (w + g) * sp, tip: 0.38 * w * sp });
   const circles = [];
   for (const f of fingers) {
     for (let k = 0; k <= 7; k++) { const t = k / 7; circles.push({ x: f.x, y: f.tip + t * L, r: w * 0.5 * (1 - 0.18 * t), t }); }
@@ -2341,7 +2359,7 @@ function handGeom() {
       rim.push({ x, y, nx, ny });
     }
   }
-  return { w, g, L, fingers, circles, pads, rim };
+  return { w, g, L, TIP, fingers, circles, pads, rim };
 }
 
 // The forearm pivots at the elbow below the screen, so fingers lean left on the left side of the
@@ -2353,15 +2371,20 @@ function aimHand(p, vx, snap) {
   handA = Math.max(-1.1, Math.min(1.1, next));   // a wiping hand never turns sideways or down
 }
 
-// It is the fingertip that wipes: its pad presses firmly and clears the inside of the glass.
+// It is the fingertips that wipe: their pads press firmly and clear the inside of the glass. A hand
+// brought down in a fast sweep presses the rest of its fingers flat too, so they clear nearly as well.
 function stampHand(x, y, ang, dir) {
-  const c = Math.cos(ang), s = Math.sin(ang), { w, L } = hand;
-  const rTip = w * 0.5, rEnd = w * 0.5 * 0.82;
+  const c = Math.cos(ang), s = Math.sin(ang), { w, L, TIP } = hand;
+  const rTip = w * 0.5, rMid = w * 0.5 * (1 - 0.18 * TIP), rBase = w * 0.5 * 0.82;
   for (const f of hand.fingers) {
-    const lx = f.x, ly = f.tip + L;
-    wipes.push(x + c * lx - s * ly, y + s * lx + c * ly, rEnd, rTip, L, ang, 1, dir);
+    let lx = f.x, ly = f.tip + TIP * L;
+    wipes.push(x + c * lx - s * ly, y + s * lx + c * ly, rMid, rTip, TIP * L, ang, 1, dir);
+    if (TIP >= 0.999) continue;
+    ly = f.tip + L;
+    wipes.push(x + c * lx - s * ly, y + s * lx + c * ly, rBase, rMid, (1 - TIP) * L, ang, 0.8, dir);   // the flat finger, pressed down by the sweep
   }
-  for (const k of hand.circles) markWiped(x + c * k.x - s * k.y, y + s * k.x + c * k.y, k.r, 1);
+  // how clear each part leaves the glass: the pad fully, the flat finger nearly as well, a little less toward the palm
+  for (const k of hand.circles) markWiped(x + c * k.x - s * k.y, y + s * k.x + c * k.y, k.r, k.t <= TIP ? 1 : 0.9 - 0.3 * (k.t - TIP) / (1 - TIP));
 }
 
 // Droplets a wipe leaves per px² of fully fogged glass it clears (damp air leaves a few more)
@@ -2427,7 +2450,7 @@ function sweep(a, b, a0, a1) {
     const tips = hand.fingers.map((f) => (c * f.x - s * f.tip) * nx + (s * f.x + c * f.tip) * ny);   // each fingertip, across the stroke
     const leaveAt = (o, r, drip = false) => {
       const back = eBack - rand() * Math.max(stepLen, 2 * S), px = x + nx * o + mx * back, py = y + ny * o + my * back;
-      if (drip) addDrip(px, py, r * S * big); else lay(px, py, r * S * big);
+      if (drip) addDrip(px, py, r * S * big, 1.6 + 1.4 * heavy()); else lay(px, py, r * S * big);
     };
     while (stroke.leave >= 1) {
       stroke.leave -= 1;
@@ -2442,11 +2465,11 @@ function sweep(a, b, a0, a1) {
       leaveAt(side + inward * rand() * 3 * S, 1.3 + rand() * 1.3 + (rand() < 0.15 ? 1.2 : 0));
     }
     // A fingertip holds only so much; past that, a bigger drop is left behind it, anywhere across the
-    // band. The longer the stroke has run over fogged glass, the more water it carries and the bigger
-    // the drop; often one is heavy enough to run down the inside of the pane.
+    // band. The more fog the stroke has wiped through, the more water it carries and the bigger the
+    // drop, up to a heavy bead; often one is heavy enough to run down the inside of the pane.
     if (stroke.tip > TIP_HOLD * tips.length) {
       stroke.tip -= TIP_HOLD;
-      const r = 2.4 + 2.4 * (1 - Math.exp(-stroke.got / 150)) + rand() * 0.8;
+      const hv = heavy(), r = 2.4 + 2.6 * hv + 3.4 * hv * hv + rand() * (0.8 + 1.2 * hv);
       leaveAt(eNeg + (ePos - eNeg) * (0.12 + 0.76 * rand()), r, r * S * big >= dripR() && rand() < 0.6);
     }
     if (len <= 0.5) continue;
@@ -2568,8 +2591,8 @@ function showPushed() {
   // too much to hold: its lowest point gathers into a drop that runs, taking that water with it
   if (line.over > dripR() ** 3 * 2.5 && stroke.dist - (stroke.lastDrip ?? -1e9) > hand.w) {
     stroke.lastDrip = stroke.dist;
-    const r = Math.min(dripR() * 1.8, Math.max(dripR() * 1.05, Math.cbrt(line.over)));
-    addDrip(line.low.x, line.low.y + line.low.t + r * 0.6, r);
+    const cap = 1.8 + 1.4 * heavy(), r = Math.min(dripR() * cap, Math.max(dripR() * (1.05 + 0.6 * heavy()), Math.cbrt(line.over)));
+    addDrip(line.low.x, line.low.y + line.low.t + r * 0.6, r, cap);
     stroke.carry = Math.max(0, stroke.carry - r ** 3);
   }
   for (const g of line.segs) lines.push(g.x, g.y, g.r1, g.r2, g.len, g.ang, 0, stroke.seed);
@@ -2596,10 +2619,23 @@ function release() {
   if (line) {
     for (const g of line.segs) layLine(g.x, g.y, g.r1, g.r2, g.len, g.ang, stroke.seed);
     if (line.over > dripR() ** 3 * 2 || (stroke.got > 15 && rand() < 0.85)) {
-      addDrip(line.low.x, line.low.y + line.low.t + dripR() * 0.6, Math.min(dripR() * 1.8, Math.max(dripR() * 1.05, Math.cbrt(line.over))));
+      const cap = 1.8 + 1.4 * heavy();
+      addDrip(line.low.x, line.low.y + line.low.t + dripR() * 0.6, Math.min(dripR() * cap, Math.max(dripR() * (1.05 + 0.6 * heavy()), Math.cbrt(line.over))), cap);
     }
   }
   stroke = null;
+}
+
+// How fast the hand is going (smoothed, in px/ms) decides how many fingers are on the glass: once a
+// sweep is fast and has run wide, three; once it slows right down, back to one.
+function spreadHand(d, now) {
+  const dt = Math.max(1, now - stroke.t);
+  stroke.t = now;
+  stroke.v += (Math.min(6, d / dt) - stroke.v) * Math.min(1, dt / 60);
+  if (!stroke.three && stroke.v > 1.3 && stroke.dist > 140 * S) stroke.three = true;
+  else if (stroke.three && stroke.v < 0.45) stroke.three = false;
+  stroke.spread += ((stroke.three ? 1 : 0) - stroke.spread) * Math.min(1, dt / 90);
+  hand = handGeom(stroke.spread);
 }
 
 // One finger wipes: only the touch that started the stroke moves it. A second finger, or the edge of a
@@ -2610,13 +2646,15 @@ canvas.addEventListener('pointerdown', (e) => {
   if (stroke) release();   // the same pointer again: its last lift was lost, so start afresh
   strokeId = e.pointerId;
   lastPt = pt(e); aimHand(lastPt, 0, true); sway = 0;
-  stroke = { mx: 0, my: 0, dist: 0, leave: 0, tip: 0, edge: 0, got: 0, carry: 0, shown: null, seed: rand() * 6.283 };
+  stroke = { mx: 0, my: 0, dist: 0, leave: 0, tip: 0, edge: 0, got: 0, carry: 0, shown: null, seed: rand() * 6.283, v: 0, t: e.timeStamp, spread: 0, three: false };
+  hand = handGeom(0);
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
   sweep(lastPt, lastPt, handA, handA);
 });
 canvas.addEventListener('pointermove', (e) => {
   if (!stroke || e.pointerId !== strokeId) return;
   const p = pt(e), a0 = handA;
+  spreadHand(Math.hypot(p.x - lastPt.x, p.y - lastPt.y), e.timeStamp);
   aimHand(p, p.x - lastPt.x, false);
   sweep(lastPt, p, a0, handA);
   lastPt = p;

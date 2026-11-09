@@ -64,13 +64,15 @@ None of the pages show a control tray; each runs at fixed settings.
     lights on (`room.jpg`, a photograph generated with Higgsfield). Through the fog it shows only as
     soft glows of its lights and screens; on wiped glass it is clearer. Soft streaks of glare rake
     down the glass, and the warm pendant up to the left flares in a halo.
-  - Wiping: only one fingertip touches the glass (a thumb's on phones), a short rounded pad. It clears
-    the fog, leaves a thin, quickly drying streaky film, and leaves drops behind (in the fingertip's
-    track and along both edges of the band). The water it gathers rides its leading edge as a thin
-    line shaped like the fingertip, staying where the wipe stops; past what it can hold, it drips,
-    and often: drops run down from the finger's track and from where a wipe stops. Wiping over
-    earlier water pushes it together. All of it stays as the fog returns, evaporating only over
-    minutes, and the raindrops outside are never touched.
+  - Wiping: a slow or short wipe is one fingertip on the glass (a thumb's on phones), a short rounded
+    pad. A fast, wide sweep brings the hand down: three fingers lie flat on the glass and wipe a
+    broad band, and as the hand slows it lifts back to one fingertip. Only the first touch wipes.
+    Wiping clears the fog, leaves a thin, quickly drying streaky film, and scatters drops across the
+    band, with ridges along both its edges. The water it gathers rides its leading edge as a thin line
+    shaped like the fingertips, staying where the wipe stops; past what it can hold, it drips, and
+    often: drops run down from the band and from where a wipe stops, bigger the more fog the wipe has
+    gathered. Wiping over earlier water pushes it together. All of it stays as the fog returns,
+    evaporating only over minutes, and the raindrops outside are never touched.
   - Drips run down the inside, clearing a narrow track through the fog. Each leaves a line of beads
     behind it, largest at the bottom, leaning up to 10° either way.
   - The drops land gently: a soft knock (resonance 1.3–2.3 kHz) with a slow-ish attack, hardly any
