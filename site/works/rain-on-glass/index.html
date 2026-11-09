@@ -2421,8 +2421,8 @@ function sweep(a, b, a0, a1) {
       const d = drips[i];
       if (under(d.x, d.y, d.r * 0.5)) { stroke.carry += d.r ** 3; drips.splice(i, 1); }
     }
-    // and part of it stays behind them, as droplets on the glass they have just cleared: most in
-    // the track of a fingertip, where the water gathers, the rest anywhere across the band
+    // and part of it stays behind, as droplets scattered across the glass it has just cleared (one
+    // fingertip smears its water over the whole band; it doesn't leave a line of it down its middle)
     // (beads are laid after this frame's wipe, so they survive it)
     const tips = hand.fingers.map((f) => (c * f.x - s * f.tip) * nx + (s * f.x + c * f.tip) * ny);   // each fingertip, across the stroke
     const leaveAt = (o, r, drip = false) => {
@@ -2431,7 +2431,7 @@ function sweep(a, b, a0, a1) {
     };
     while (stroke.leave >= 1) {
       stroke.leave -= 1;
-      const o = rand() < 0.6 ? tips[(rand() * tips.length) | 0] + (rand() - 0.5) * hand.w * 0.6 : eNeg + (ePos - eNeg) * (0.04 + 0.92 * rand());
+      const o = eNeg + (ePos - eNeg) * (0.04 + 0.92 * rand());
       leaveAt(o, rand() < 0.1 ? 2.8 + rand() * 1.7 : 1 + rand() * rand() * 2);   // little drops, smaller than raindrops; the odd larger bead
     }
     // the water pushed aside lies in a ridge of drops along both edges of the wiped band, right
@@ -2441,13 +2441,13 @@ function sweep(a, b, a0, a1) {
       const side = rand() < 0.5 ? ePos : eNeg, inward = side === ePos ? -1 : 1;
       leaveAt(side + inward * rand() * 3 * S, 1.3 + rand() * 1.3 + (rand() < 0.15 ? 1.2 : 0));
     }
-    // A fingertip holds only so much; past that, a bigger drop is left in its track. The longer the
-    // stroke has run over fogged glass, the more water it carries and the bigger the drop; now
-    // often one is heavy enough to run down the inside of the pane.
+    // A fingertip holds only so much; past that, a bigger drop is left behind it, anywhere across the
+    // band. The longer the stroke has run over fogged glass, the more water it carries and the bigger
+    // the drop; often one is heavy enough to run down the inside of the pane.
     if (stroke.tip > TIP_HOLD * tips.length) {
       stroke.tip -= TIP_HOLD;
       const r = 2.4 + 2.4 * (1 - Math.exp(-stroke.got / 150)) + rand() * 0.8;
-      leaveAt(tips[(rand() * tips.length) | 0] + (rand() - 0.5) * hand.w * 0.3, r, r * S * big >= dripR() && rand() < 0.6);
+      leaveAt(eNeg + (ePos - eNeg) * (0.12 + 0.76 * rand()), r, r * S * big >= dripR() && rand() < 0.6);
     }
     if (len <= 0.5) continue;
     // remember where both edges of the wipe ran, so water left on them can follow their curve
@@ -2602,21 +2602,28 @@ function release() {
   stroke = null;
 }
 
+// One finger wipes: only the touch that started the stroke moves it. A second finger, or the edge of a
+// palm brushing the screen in a quick swipe, is ignored, so the wipe never jumps between touches.
+let strokeId = null;
 canvas.addEventListener('pointerdown', (e) => {
+  if (stroke && e.pointerId !== strokeId) return;   // another touch while one is wiping
+  if (stroke) release();   // the same pointer again: its last lift was lost, so start afresh
+  strokeId = e.pointerId;
   lastPt = pt(e); aimHand(lastPt, 0, true); sway = 0;
   stroke = { mx: 0, my: 0, dist: 0, leave: 0, tip: 0, edge: 0, got: 0, carry: 0, shown: null, seed: rand() * 6.283 };
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
   sweep(lastPt, lastPt, handA, handA);
 });
 canvas.addEventListener('pointermove', (e) => {
-  if (!stroke) return;
+  if (!stroke || e.pointerId !== strokeId) return;
   const p = pt(e), a0 = handA;
   aimHand(p, p.x - lastPt.x, false);
   sweep(lastPt, p, a0, handA);
   lastPt = p;
 });
-canvas.addEventListener('pointerup', release);
-canvas.addEventListener('pointercancel', release);
+const lift = (e) => { if (e.pointerId === strokeId) { release(); strokeId = null; } };
+canvas.addEventListener('pointerup', lift);
+canvas.addEventListener('pointercancel', lift);
 
 const paused = false;
 
