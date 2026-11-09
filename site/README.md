@@ -52,6 +52,9 @@ None of the pages show a control tray; each runs at fixed settings.
     - A drop starts to run once it is as big as the 95th percentile of the drops resting on the
       pane, never smaller than a set floor. Runners are fast and leave small beads along their
       track at an uneven spacing. The beads stay until there are too many, then the oldest dry away.
+    - Running water (runners and streams) goes straight down unless something resists it to one
+      side: grime holds it back and turns it toward cleaner glass, wet tracks draw it in, and gusts
+      push the outside drops a little.
     - Against the bright sky a drop reads darker: its rim is dark, and the lens shows the ground
       below, flipped.
   - Inside: a fog of beaded condensation and fine micro-droplets lies over all of it and blurs the
@@ -65,8 +68,9 @@ None of the pages show a control tray; each runs at fixed settings.
     soft glows of its lights and screens; on wiped glass it is clearer. Soft streaks of glare rake
     down the glass, and the warm pendant up to the left flares in a halo.
   - Wiping: a slow or short wipe is one fingertip on the glass (a thumb's on phones), a short rounded
-    pad. A fast, wide sweep brings the hand down: three fingers lie flat on the glass and wipe a
-    broad band, and as the hand slows it lifts back to one fingertip. Only the first touch wipes.
+    pad. Sweeping fast for a second and a half brings the hand down: three fingers lie flat on the
+    glass and wipe a broad band, and as the hand slows it lifts back to one fingertip. Only the first
+    touch wipes.
     Wiping clears the fog, leaves a thin, quickly drying streaky film, and scatters drops across the
     band, with ridges along both its edges. The water it gathers rides its leading edge as a thin line
     shaped like the fingertips, staying where the wipe stops; past what it can hold, it drips, and
@@ -74,7 +78,8 @@ None of the pages show a control tray; each runs at fixed settings.
     gathered. Wiping over earlier water pushes it together. All of it stays as the fog returns,
     evaporating only over minutes, and the raindrops outside are never touched.
   - Drips run down the inside, clearing a narrow track through the fog. Each leaves a line of beads
-    behind it, largest at the bottom, leaning up to 10° either way.
+    behind it, largest at the bottom. They run straight down, bending only where grime to one side
+    turns them.
   - The drops land gently: a soft knock (resonance 1.3–2.3 kHz) with a slow-ish attack, hardly any
     click, everything above 5 kHz rolled off, only a few knocks a second, and all of them quiet.
   - The view holds still under the pointer.

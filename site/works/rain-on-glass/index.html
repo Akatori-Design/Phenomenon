@@ -1051,6 +1051,12 @@ function resetWipeGrid() {
   sill = new Float32Array(Math.ceil(simW / WG) + 2);
 }
 const dirtAt = (x, y) => sampleGrid(dirt, x, y);
+// Which way the glass turns water at (x, y): -1 .. 1 toward the cleaner side, and 0 unless the grime
+// either side (span away) clearly differs, so on even glass water runs straight down.
+const sideStep = (x, y, span) => {
+  const g = dirtAt(x - span, y) - dirtAt(x + span, y);
+  return Math.sign(g) * Math.min(1, Math.max(0, Math.abs(g) - 0.12) / 0.1);   // the grimiest tenth of the glass or so
+};
 
 // Water that reaches the bottom of the pane gathers along its edge in a ridge, spreads sideways,
 // and drips off wherever it gets too heavy. sill[i] is the volume over each 6px column.
@@ -1344,12 +1350,14 @@ function step(dt) {
         d.bulge = Math.max(0, (d.bulge || 0) - 0.08 * dt);
         if (rand() < 0.01 * dt * grip / (pull * pull)) d.stuck = (8 + rand() * 30) * grip / pull;
       }
-      // Small drops wander and get drawn toward wet paths; a heavy drop's momentum shrugs off
-      // those small sideways pulls and it runs nearly straight down.
+      // A drop runs straight down unless something resists it to one side: grime holds it back there
+      // and turns it toward cleaner glass, and wet paths below draw it in. Small drops feel these
+      // most; a heavy drop's momentum shrugs them off. (Only a trace of the glass's tiny unevenness.)
       const sway = 1 / (1 + 6 * heavy ** 1.2);
-      d.vx += (rand() - 0.5) * 0.35 * S * dt * sway;
+      d.vx += (rand() - 0.5) * 0.08 * S * dt * sway;
+      d.vx += sideStep(d.x, d.y + d.r, d.r * 2) * 0.12 * S * dt * sway;   // around grime
       d.vx += wetPull(d.x, d.y + d.r * 1.5, d.r + 6 * S) * 0.6 * S * dt * sway;   // drawn sideways toward wet trails and streams below
-      d.vx += weather.wind * 0.12 * S * dt * (0.4 + 0.6 * sway);   // pushed by gusts of wind
+      d.vx += weather.wind * 0.06 * S * dt * (0.4 + 0.6 * sway);   // pushed a little by gusts of wind
       d.vx *= Math.pow(0.86 - 0.2 * heavy, dt);
       if (d.kick) { d.x += d.kick * dt; d.kick *= Math.pow(0.88, dt); if (Math.abs(d.kick) < 0.01) d.kick = 0; }
       d.x += d.vx * dt; d.y += d.vy * dt;
@@ -1949,11 +1957,13 @@ function stepRivulets(dt) {
           let step = 0;
           if (rv.jog > 0) { rv.jog -= 1; step = rv.jogDx; }
           else if (rand() < (0.012 + 0.03 * dirtAt(rv.x, y)) * rv.snag) {
-            const D = (rand() < 0.5 ? -1 : 1) * wd * (0.35 + rand() * rand() * 2), m = Math.max(2 + (rand() * 3 | 0), Math.ceil(Math.abs(D) / 1.5));   // gravity: never steeper than ~35° off vertical
+            // it steps toward the cleaner side, if one side is grimier; otherwise either way
+            const gd = dirtAt(rv.x + 8 * S, y + 4 * S) - dirtAt(rv.x - 8 * S, y + 4 * S);
+            const D = (Math.abs(gd) > 0.04 ? -Math.sign(gd) : rand() < 0.5 ? -1 : 1) * wd * (0.35 + rand() * rand() * 2), m = Math.max(2 + (rand() * 3 | 0), Math.ceil(Math.abs(D) / 1.5));   // gravity: never steeper than ~35° off vertical
             rv.jog = m - 1; rv.jogDx = step = D / m; rv.kink = Math.min(1, Math.abs(D) / (wd * 2));
           }
-          rv.vx += (rand() - 0.5) * 0.05 * S;
-          rv.vx += ((Math.sin(y * 0.013 + rv.ph[0]) * 0.6 + Math.sin(y * 0.0071 + rv.ph[1]) * 0.4) * 0.25 * S * rv.wander - rv.vx) * 0.1;   // a slow, gentle, uneven sway
+          rv.vx += (rand() - 0.5) * 0.02 * S;
+          rv.vx += ((Math.sin(y * 0.013 + rv.ph[0]) * 0.6 + Math.sin(y * 0.0071 + rv.ph[1]) * 0.4) * 0.06 * S * rv.wander - rv.vx) * 0.1;   // the faintest sway; it runs straight unless steered
           const gapN = near ? nd - streamR(near.o, near.q) - wd : Infinity;
           if (gapN < wd * 6) rv.vx += Math.sign(near.q.x - rv.x) * (gapN < wd * 2.5 ? 0.35 : 0.12) * S;   // close by, the head is drawn into it
           rv.vx += wetPull(rv.x, y + 6 * S, wd + 6 * S) * 0.3 * S;
@@ -2258,8 +2268,8 @@ const dripR = () => 2.8 * S * (viewW() < 640 ? 1.6 : 1);   // an inside drop thi
 const heavy = () => stroke ? 1 - Math.exp(-stroke.got / 220) : 0;
 function addDrip(x, y, r, cap = 1.6) {
   r = Math.min(r, dripR() * cap);   // drips on the inside stay small, unless a wipe gathered a lot of water
-  // each runs straight, leaning up to 10° to one side or the other
-  if (drips.length < 18) drips.push({ x, y, r, cap: Math.max(1.7, cap), vy: 0.15 * S, slope: Math.tan((rand() * 2 - 1) * 10 * Math.PI / 180), run: 0, fine: 0, stuck: 0, seed: rand() * 6.283 });
+  // each runs straight down (see stepDrips for what turns it)
+  if (drips.length < 18) drips.push({ x, y, r, cap: Math.max(1.7, cap), vy: 0.15 * S, slope: (rand() * 2 - 1) * 0.015, run: 0, fine: 0, stuck: 0, seed: rand() * 6.283 });
   else lay(x, y, r);
 }
 function stepDrips(dt) {
@@ -2271,7 +2281,13 @@ function stepDrips(dt) {
       d.vy += (target - d.vy) * Math.min(1, 0.08 * dt);
       if (rand() < 0.01 * dt) d.stuck = 15 + rand() * 60;   // the glass catches it for a moment
     }
-    if (!(d.stuck > 0)) { d.y += d.vy * dt; d.x += d.vy * d.slope * dt; d.run += d.vy * dt; }
+    if (!(d.stuck > 0)) {
+      // Gravity takes it straight down. Only real resistance turns it: where grime is clearly heavier
+      // on one side, it holds the water back there and the drip steps toward the cleaner glass, then
+      // carries on straight down. Never more than ~20° off vertical.
+      d.slope += (sideStep(d.x, d.y + d.r, d.r * 2.5) * 0.36 - d.slope) * Math.min(1, 0.06 * dt);
+      d.y += d.vy * dt; d.x += d.vy * d.slope * dt; d.run += d.vy * dt;
+    }
     // two drips that touch run on as one
     for (let j = i - 1; j >= 0; j--) {
       const o = drips[j];
@@ -2626,14 +2642,17 @@ function release() {
   stroke = null;
 }
 
-// How fast the hand is going (smoothed, in px/ms) decides how many fingers are on the glass: once a
-// sweep is fast and has run wide, three; once it slows right down, back to one.
+// How fast the hand is going (smoothed, in px/ms) decides how many fingers are on the glass: only once
+// it has kept up a fast sweep for a second and a half (a moment's slowing, as at the turn of a scrub,
+// only sets that back a little) does the hand come down to three; once it slows right down, back to one.
+const THREE_AFTER = 1500;   // ms of fast sweeping
 function spreadHand(d, now) {
   const dt = Math.max(1, now - stroke.t);
   stroke.t = now;
   stroke.v += (Math.min(6, d / dt) - stroke.v) * Math.min(1, dt / 60);
-  if (!stroke.three && stroke.v > 1.3 && stroke.dist > 140 * S) stroke.three = true;
-  else if (stroke.three && stroke.v < 0.45) stroke.three = false;
+  stroke.fastT = Math.max(0, Math.min(THREE_AFTER, (stroke.fastT || 0) + (stroke.v > 1 ? dt : -2.5 * dt)));
+  if (!stroke.three && stroke.fastT >= THREE_AFTER) stroke.three = true;
+  else if (stroke.three && stroke.v < 0.45) { stroke.three = false; stroke.fastT = 0; }
   stroke.spread += ((stroke.three ? 1 : 0) - stroke.spread) * Math.min(1, dt / 90);
   hand = handGeom(stroke.spread);
 }
