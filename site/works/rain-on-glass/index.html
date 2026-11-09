@@ -2307,23 +2307,23 @@ function stepDrips(dt) {
   }
 }
 
-// ---------- wiping with three fingers (one thumb on a phone) ----------
+// ---------- wiping with one finger (a thumb on a phone) ----------
 // The fingers are on the inside of the pane, where the condensation is; the rain is on the outside.
 // So a wipe clears the fog and fine mist from the inside and leaves the raindrops exactly as they
 // were. It never wipes perfectly clean: the fingers take up the condensation they cross and the
 // water left there before, push it along their leading edge as a thin line, and leave some of it
 // behind them as droplets, more in the tracks of the fingertips and along the edges of the band.
-// Index, middle and ring finger held together, pads and lower segments flat on the glass.
-// Hand frame: origin at the middle fingertip, +y toward the palm.
+// One finger, its pad and lower segments flat on the glass.
+// Hand frame: origin at the fingertip, +y toward the palm.
 let hand = null, stroke = null, lastPt = null, handA = 0, sway = 0;
 const pt = (e) => ({ x: localX(e), y: localY(e) });
 const TIP = 0.42;   // share of the finger length that is firm fingertip pad
 
 function handGeom() {
-  // on a phone-sized pane it is one thumb that wipes: a single broad, short pad
+  // one finger wipes; on a phone-sized pane it is a thumb, a broader and shorter pad
   const thumb = viewW() < 640;
-  const w = (thumb ? 80 : 40) * S, g = 5 * S, L = (thumb ? 1.4 : 2.3) * w;
-  const fingers = thumb ? [{ x: 0, tip: 0 }] : [{ x: -(w + g), tip: 0.3 * w }, { x: 0, tip: 0 }, { x: w + g, tip: 0.38 * w }];
+  const w = (thumb ? 80 : 46) * S, g = 5 * S, L = (thumb ? 1.4 : 2.3) * w;
+  const fingers = [{ x: 0, tip: 0 }];
   const circles = [];
   for (const f of fingers) {
     for (let k = 0; k <= 7; k++) { const t = k / 7; circles.push({ x: f.x, y: f.tip + t * L, r: w * 0.5 * (1 - 0.18 * t), t }); }
@@ -2371,7 +2371,7 @@ function stampHand(x, y, ang, dir) {
 // Droplets a wipe leaves per px² of fully fogged glass it clears (damp air leaves a few more)
 const LEAVE = 1 / 600;
 // how much of it a fingertip can hold before some is left behind (in droplets' worth)
-const TIP_HOLD = 8;
+const TIP_HOLD = 3;
 function sweep(a, b, a0, a1) {
   const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy);
   stroke.speedNow = Math.max(stroke.speedNow || 0, len);
@@ -2447,11 +2447,11 @@ function sweep(a, b, a0, a1) {
     }
     // A fingertip holds only so much; past that, a bigger drop is left in its track. The longer the
     // stroke has run over fogged glass, the more water it carries and the bigger the drop; now
-    // and then one is heavy enough to run down the inside of the pane.
+    // often one is heavy enough to run down the inside of the pane.
     if (stroke.tip > TIP_HOLD * tips.length) {
       stroke.tip -= TIP_HOLD;
       const r = 2.4 + 2.4 * (1 - Math.exp(-stroke.got / 150)) + rand() * 0.8;
-      leaveAt(tips[(rand() * tips.length) | 0] + (rand() - 0.5) * hand.w * 0.3, r, r * S * big >= dripR() && rand() < 0.06);
+      leaveAt(tips[(rand() * tips.length) | 0] + (rand() - 0.5) * hand.w * 0.3, r, r * S * big >= dripR() && rand() < 0.6);
     }
     if (len <= 0.5) continue;
     // remember where both edges of the wipe ran, so water left on them can follow their curve
@@ -2570,7 +2570,7 @@ function showPushed() {
   const line = pushedLine();
   if (!line) return;
   // too much to hold: its lowest point gathers into a drop that runs, taking that water with it
-  if (line.over > dripR() ** 3 * 12 && stroke.dist - (stroke.lastDrip ?? -1e9) > hand.w * 1.5) {
+  if (line.over > dripR() ** 3 * 2.5 && stroke.dist - (stroke.lastDrip ?? -1e9) > hand.w) {
     stroke.lastDrip = stroke.dist;
     const r = Math.min(dripR() * 1.8, Math.max(dripR() * 1.05, Math.cbrt(line.over)));
     addDrip(line.low.x, line.low.y + line.low.t + r * 0.6, r);
@@ -2582,8 +2582,8 @@ function showPushed() {
 
 // Lifting the fingers: the line they were pushing stays where they stopped, lying along their
 // leading edge, and each fingertip leaves a few small drops where its pad was. All of it is noted,
-// so a later wipe can gather it up again. A line that is still too full, or one left by a long
-// wipe, now and then runs down from its lowest point.
+// so a later wipe can gather it up again. A line that is still too full, or one left by any real
+// wipe, mostly runs down from its lowest point.
 function release() {
   if (!stroke) return;
   unshowPushed();
@@ -2599,7 +2599,7 @@ function release() {
   const line = pushedLine();
   if (line) {
     for (const g of line.segs) layLine(g.x, g.y, g.r1, g.r2, g.len, g.ang, stroke.seed);
-    if (line.over > dripR() ** 3 * 6 || (stroke.got > 150 && rand() < 0.25)) {
+    if (line.over > dripR() ** 3 * 2 || (stroke.got > 15 && rand() < 0.85)) {
       addDrip(line.low.x, line.low.y + line.low.t + dripR() * 0.6, Math.min(dripR() * 1.8, Math.max(dripR() * 1.05, Math.cbrt(line.over))));
     }
   }
