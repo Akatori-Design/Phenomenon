@@ -2313,16 +2313,16 @@ function stepDrips(dt) {
 // were. It never wipes perfectly clean: the fingers take up the condensation they cross and the
 // water left there before, push it along their leading edge as a thin line, and leave some of it
 // behind them as droplets, more in the tracks of the fingertips and along the edges of the band.
-// One finger, its pad and lower segments flat on the glass.
+// Only the tip of one finger touches the glass: a short, rounded pad.
 // Hand frame: origin at the fingertip, +y toward the palm.
 let hand = null, stroke = null, lastPt = null, handA = 0, sway = 0;
 const pt = (e) => ({ x: localX(e), y: localY(e) });
-const TIP = 0.42;   // share of the finger length that is firm fingertip pad
+const TIP = 1;   // share of the touching length that is firm pad: all of it, since only the tip touches
 
 function handGeom() {
-  // one finger wipes; on a phone-sized pane it is a thumb, a broader and shorter pad
+  // one fingertip wipes, barely longer than it is wide; on a phone-sized pane it is a thumb's, broader
   const thumb = viewW() < 640;
-  const w = (thumb ? 80 : 46) * S, g = 5 * S, L = (thumb ? 1.4 : 2.3) * w;
+  const w = (thumb ? 80 : 46) * S, g = 5 * S, L = (thumb ? 0.3 : 0.2) * w;
   const fingers = [{ x: 0, tip: 0 }];
   const circles = [];
   for (const f of fingers) {
@@ -2353,19 +2353,15 @@ function aimHand(p, vx, snap) {
   handA = Math.max(-1.1, Math.min(1.1, next));   // a wiping hand never turns sideways or down
 }
 
-// It is the fingertips that wipe: their pads press firmly and clear the inside of the glass, while
-// the rest of the fingers barely touch it.
+// It is the fingertip that wipes: its pad presses firmly and clears the inside of the glass.
 function stampHand(x, y, ang, dir) {
   const c = Math.cos(ang), s = Math.sin(ang), { w, L } = hand;
-  const rTip = w * 0.5, rMid = w * 0.5 * (1 - 0.18 * TIP), rBase = w * 0.5 * 0.82;
+  const rTip = w * 0.5, rEnd = w * 0.5 * 0.82;
   for (const f of hand.fingers) {
-    let lx = f.x, ly = f.tip + TIP * L;
-    wipes.push(x + c * lx - s * ly, y + s * lx + c * ly, rMid, rTip, TIP * L, ang, 1, dir);
-    ly = f.tip + L;
-    wipes.push(x + c * lx - s * ly, y + s * lx + c * ly, rBase, rMid, (1 - TIP) * L, ang, 0.5, dir);   // the lower finger presses lighter
+    const lx = f.x, ly = f.tip + L;
+    wipes.push(x + c * lx - s * ly, y + s * lx + c * ly, rEnd, rTip, L, ang, 1, dir);
   }
-  // how clear each part leaves the glass, as above: the pad fully, the rest of the finger hardly at all
-  for (const k of hand.circles) markWiped(x + c * k.x - s * k.y, y + s * k.x + c * k.y, k.r, k.t <= TIP ? 1 : 0.25 * (1 - (k.t - TIP) / (1 - TIP)));
+  for (const k of hand.circles) markWiped(x + c * k.x - s * k.y, y + s * k.x + c * k.y, k.r, 1);
 }
 
 // Droplets a wipe leaves per px² of fully fogged glass it clears (damp air leaves a few more)
