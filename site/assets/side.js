@@ -15,6 +15,7 @@ const PIECES = [
   { id: 'komorebi-wall', ja: '木漏れ日', en: 'komorebi', href: new URL('works/komorebi-wall/', root).href },
   { id: 'rain-on-glass', ja: '雨の日', en: 'rainy day', href: new URL('works/rain-on-glass/', root).href },
   { id: 'attic-light', ja: '屋根裏', en: 'attic', href: new URL('works/attic-light/', root).href },
+  { id: 'senko', ja: '線香', en: 'incense', href: new URL('works/senko/', root).href },
   { id: 'hiro', ja: 'ひろの部屋', en: "hiro's room", href: 'https://imhiro.xyz/' },
 ];
 const current = PIECES.find((p) => p.id === me.dataset.current) || PIECES[0];
@@ -85,6 +86,7 @@ css.textContent = `
 .side.open .side-pieces li:nth-child(1) { transition-delay: 0.08s; }
 .side.open .side-pieces li:nth-child(2) { transition-delay: 0.18s; }
 .side.open .side-pieces li:nth-child(3) { transition-delay: 0.28s; }
+.side.open .side-pieces li:nth-child(4) { transition-delay: 0.38s; }
 @media (prefers-reduced-motion: reduce) {
   .side { animation: none; }
   .side-pieces::after, .side-pieces li { transition: none; }

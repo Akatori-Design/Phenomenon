@@ -1,0 +1,1058 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>線香 Senko</title>
+<meta name="description" content="A stick of Japanese incense burning quietly. Its smoke rises, sways with the faintest movement of the air, and can be stirred.">
+<meta name="theme-color" content="#050505">
+<style>
+/* Layout: one full-bleed WebGL stage; on the Phenomenon site the piece shows only its name (assets/side.js). */
+:root { --bg: #050505; --muted: #8f8577; color-scheme: dark; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); overflow: hidden; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+#c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; opacity: 0; transition: opacity 1.8s ease; }
+#c.is-lit { opacity: 1; }
+.fallback { position: fixed; inset: 0; display: grid; place-items: center; padding-inline: 16px; text-align: center; color: var(--muted); font-size: 13px; }
+.fallback[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { #c { transition: none; } }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="A stick of Japanese incense burning in a ceramic holder on a stone table. A thin thread of smoke rises and sways. Move the pointer through the smoke to stir the air."></canvas>
+<p class="fallback" id="nogl" hidden>This piece needs WebGL 2 with float render targets.</p>
+
+<script>
+/*! Phenomenon · 線香 Senko · © 2026 Hiro · Akatori Design. All rights reserved. */
+(() => {
+'use strict';
+// ---------- host ----------
+// Everything the effect needs from the page it runs in.
+const $ = (id) => document.getElementById(id);
+const viewW = () => innerWidth, viewH = () => innerHeight;
+const localX = (e) => e.clientX, localY = (e) => e.clientY;
+const onPage = (type, fn, opts) => addEventListener(type, fn, opts);
+const nextFrame = (fn) => requestAnimationFrame(fn);
+// ---------- end host ----------
+const canvas = $('c');
+const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, powerPreference: 'high-performance' });
+if (!gl || !gl.getExtension('EXT_color_buffer_float')) { $('nogl').hidden = false; return; }
+
+// ---------- settings ----------
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const N = 840, M = 24, SUB = 1;   // the smoke is M threads side by side, each N points long, drawn with SUB spline pieces between points
+const GRID = 256;                 // the air is solved on a grid this many cells along the pane's longer side
+const ITER = 11;                  // pressure passes a frame, two steps each (the solve carries over from frame to frame)
+const BAKE_N = 96;                // the still scene is built up from this many lens samples
+// The physics, in centimetres and seconds.
+const K = {
+  buoy: 40,      // lift on warm air, cm/s² per unit of warmth
+  cool: 0.9,     // the smoke gives its warmth to the room at this rate
+  drag: 0.2,     // stirred air keeps its momentum: it settles back to the room's own slow drift only at this rate
+  visc: 0.15,    // how viscous air is, cm²/s: at this size and speed, enough to keep the rising thread smooth
+  heat: 0.2,     // how fast warmth spreads through still air, cm²/s
+  conf: 5,       // keeps the whirls higher up from being smeared away by the grid
+  sway: 1.5,     // the room's faint drift, cm/s
+  eddy: 3.6,     // and its small eddies, cm/s
+  fire: 7,       // the heat the ember gives off, in units of warmth a second
+  srcV: 20,      // the push of hot gas leaving the ember, cm/s²
+  rise: 5.5,     // the speed the smoke's brightness is measured against, cm/s
+  ribbon: 0.17,  // half the width of the ribbon of smoke leaving the ember, cm
+  spread: 0.22,  // how far the ribbon widens as its smoke diffuses, cm by the time it is a few seconds old
+  wander: 2.2,   // smoke diffuses in every direction: how freely its threads drift apart as they age, cm/s
+  blur: 0.072,   // and how fast each thread itself spreads into haze, cm/s
+  life: 13,      // seconds a point of smoke is kept; it has spread too thin to see well before then
+  minutes: 12,   // how long a stick lasts
+  thread: 0.026, veil: 0.05,   // how bright the threads of smoke are, and the veil between them
+};
+
+// ---------- the scene, in centimetres (y up; the table is y = 0) ----------
+const RS = 14, R0 = 5.6, TH = 0.22;          // the dish: a cap of a sphere of radius RS, R0 across, 2·TH thick
+const TILT = 22 * Math.PI / 180;
+const DIR = [Math.sin(TILT), Math.cos(TILT), 0];
+const KNOB = [-1.9, 0.82, 0];                // the pebble of clay the stick stands in
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]], mul = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const unit = (a) => mul(a, 1 / Math.hypot(a[0], a[1], a[2]));
+const turn = (d, a) => [d[0] * Math.cos(a) + d[1] * Math.sin(a), -d[0] * Math.sin(a) + d[1] * Math.cos(a), 0];
+const BASE = add(KNOB, mul(DIR, 0.6));
+const STICK_LEN = 13, STICK_R = 0.105;
+const LIGHT = unit([-0.68, 0.62, -0.38]);    // toward the lamp: up to the left and a little behind
+const FILL = unit([0.45, 0.35, 0.82]);
+const dishK = (x, z) => { const a = Math.atan2(z, x); return 1 + 0.05 * Math.cos(3 * a + 0.7) + 0.028 * Math.cos(2 * a - 1.1); };
+// the height of whatever lies under (x, z): the dish's upper face, or the table
+function restY(x, z) {
+  const r = Math.hypot(x, z) / dishK(x, z);
+  return r < R0 ? RS + TH - Math.sqrt((RS - TH) ** 2 - r * r) : 0;
+}
+// The ribbon of smoke turns as it leaves the ember: this is its angle at time t (the shaders use the same).
+const twistAt = (t) => 0.9 * t + 1.3 * Math.sin(0.37 * t + 1) + 0.7 * Math.sin(0.83 * t);
+const TWIST = `float twistAt(float t) { return 0.9 * t + 1.3 * sin(0.37 * t + 1.0) + 0.7 * sin(0.83 * t); }`;
+const f = (x) => x.toFixed(5);
+const v3 = (a) => `vec3(${f(a[0])}, ${f(a[1])}, ${f(a[2])})`;
+
+// ---------- GL helpers ----------
+function shader(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function program(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, shader(gl.VERTEX_SHADER, vs)); gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {}, n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const name = gl.getActiveUniform(p, i).name.replace(/\[0\]$/, ''); u[name] = gl.getUniformLocation(p, name); }
+  return { p, u };
+}
+const F_RGBA16 = [gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT], F_R16 = [gl.R16F, gl.RED, gl.HALF_FLOAT], F_RGBA32 = [gl.RGBA32F, gl.RGBA, gl.FLOAT];
+function makeTarget(w, h, fmt, filter, mips) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, fmt[0], w, h, 0, fmt[1], fmt[2], null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mips ? gl.LINEAR_MIPMAP_LINEAR : filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.viewport(0, 0, w, h); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  if (mips) gl.generateMipmap(gl.TEXTURE_2D);
+  return { tex, fb, w, h };
+}
+const freeTarget = (t) => { if (t) { gl.deleteFramebuffer(t.fb); gl.deleteTexture(t.tex); } };
+const pair = (w, h, fmt, filter) => ({ read: makeTarget(w, h, fmt, filter), write: makeTarget(w, h, fmt, filter), swap() { const t = this.read; this.read = this.write; this.write = t; } });
+const freePair = (p) => { if (p) { freeTarget(p.read); freeTarget(p.write); } };
+const vaoQuad = gl.createVertexArray();
+gl.bindVertexArray(vaoQuad);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+const vaoNone = gl.createVertexArray();   // the smoke's geometry is worked out from the vertex number alone
+const bind = (unit, tex) => { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, tex); };
+function quadTo(t) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, t ? t.fb : null);
+  gl.viewport(0, 0, t ? t.w : canvas.width, t ? t.h : canvas.height);
+  gl.bindVertexArray(vaoQuad); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+const QUAD_VS = `#version 300 es
+layout(location=0) in vec2 aQuad;
+out vec2 vUv;
+void main() { vUv = aQuad * 0.5 + 0.5; gl_Position = vec4(aQuad, 0.0, 1.0); }`;
+const HEAD = `#version 300 es
+precision highp float;
+precision highp int;
+in vec2 vUv;
+out vec4 o;
+`;
+const NOISE = `
+float hash(vec2 p) { vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
+vec2 hash2(vec2 p) { vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); q += dot(q, q.yzx + 33.33); return fract((q.xx + q.yz) * q.zy); }
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+`;
+// The light is the same in the still scene and in everything drawn over it.
+const LIGHTS = `
+const vec3 LDIR = ${v3(LIGHT)};
+const vec3 FILLD = ${v3(FILL)};
+const vec3 KEY = vec3(3.1, 2.85, 2.5);        // a warm lamp
+const vec3 FILLC = vec3(0.10, 0.11, 0.125);   // what the room gives back
+const vec3 SKY = vec3(0.035, 0.04, 0.05);
+const vec3 EMBER = vec3(1.0, 0.36, 0.07);
+`;
+
+// ---------- the air ----------
+// The air in the plane of the stick is a grid of velocities (px/s, y up) with the smoke's warmth
+// beside them (B). Each frame: carry both along the flow; apply forces (lift on warm air, the room's
+// drift, the pointer, the ember); then make the flow incompressible by solving for pressure.
+const CURL_FS = HEAD + `
+uniform sampler2D uVel;
+uniform vec2 uTx;
+void main() {
+  float l = texture(uVel, vUv - vec2(uTx.x, 0.0)).y, r = texture(uVel, vUv + vec2(uTx.x, 0.0)).y;
+  float b = texture(uVel, vUv - vec2(0.0, uTx.y)).x, t = texture(uVel, vUv + vec2(0.0, uTx.y)).x;
+  o = vec4(0.5 * ((r - l) - (t - b)));
+}`;
+const FORCE_FS = HEAD + NOISE + `
+uniform sampler2D uVel, uCurl;
+uniform vec2 uTx, uRes, uInv;   // uInv: 1 / the pane's size in px
+uniform vec3 uSrc;     // the ember: x, y, radius
+uniform float uDt, uTime, uBuoy, uCool, uDrag, uConf, uSway, uEddy, uVisc, uHeat, uPx;
+uniform float uSrcT, uSrcV;
+uniform vec4 uPtr;     // the pointer's path this frame: from xy to zw
+uniform vec3 uPtrV;    // its velocity, and how firmly the air follows it this frame
+uniform float uPtrR;
+float pot(vec2 p, float t) { return noise(p + vec2(0.0, t * 0.11)) + 0.5 * noise(p * 2.3 + vec2(t * 0.17, 7.0)); }
+// The room is never quite still: a faint drift that leans one way and then the other, differently at
+// each height, and small slow eddies (the curl of a smooth field, so they neither gather nor thin the air).
+vec2 ambient(vec2 p, float t) {
+  vec2 q = p / uRes.y;
+  float sway = 0.5 * sin(t * 0.29 + q.y * 2.6) + 0.35 * sin(t * 0.17 - q.y * 1.9 + 1.3) + 0.25 * sin(t * 0.47 + q.y * 4.3 + 4.0);
+  float e = 0.02;
+  vec2 s = q * 4.0, s2 = q * 9.0 + 40.0;
+  vec2 ed = vec2(pot(s + vec2(0.0, e), t) - pot(s - vec2(0.0, e), t), pot(s - vec2(e, 0.0), t) - pot(s + vec2(e, 0.0), t)) / (2.0 * e);
+  vec2 ed2 = vec2(pot(s2 + vec2(0.0, e), t * 1.7) - pot(s2 - vec2(0.0, e), t * 1.7), pot(s2 - vec2(e, 0.0), t * 1.7) - pot(s2 + vec2(e, 0.0), t * 1.7)) / (2.0 * e);
+  // the air is stillest down by the table, and the smoke leaves the ember undisturbed; higher up
+  // there are smaller eddies too, which fold the thread over
+  float h = (p.y - uSrc.y) / uPx, up = smoothstep(-1.0, 9.0, h);
+  return vec2(sway * uSway * (0.25 + 0.75 * up), 0.0) + (ed * up + ed2 * 0.45 * smoothstep(4.0, 14.0, h)) * uEddy;
+}
+void main() {
+  // the air and its warmth are carried along the flow: what is here now came from upstream
+  vec2 from = vUv - uDt * texture(uVel, vUv).xy * uInv;
+  vec4 s = texture(uVel, from);
+  // air is viscous and warmth spreads: each cell drifts toward the mean of its neighbours
+  vec4 nb = 0.25 * (texture(uVel, from - vec2(uTx.x, 0.0)) + texture(uVel, from + vec2(uTx.x, 0.0)) + texture(uVel, from - vec2(0.0, uTx.y)) + texture(uVel, from + vec2(0.0, uTx.y)));
+  s.xy = mix(s.xy, nb.xy, uVisc); s.z = mix(s.z, nb.z, uHeat);
+  vec2 p = vUv * uRes, v = s.xy;
+  float T = s.z;
+  v += (ambient(p, uTime) - v) * (1.0 - exp(-uDrag * uDt));   // stirred air settles back to the room's drift
+  v.y += uBuoy * T * uDt;                                      // warm air is lighter and rises
+  float cl = texture(uCurl, vUv - vec2(uTx.x, 0.0)).r, cr = texture(uCurl, vUv + vec2(uTx.x, 0.0)).r;
+  float cb = texture(uCurl, vUv - vec2(0.0, uTx.y)).r, ct = texture(uCurl, vUv + vec2(0.0, uTx.y)).r, c = texture(uCurl, vUv).r;
+  vec2 g = vec2(abs(cr) - abs(cl), abs(ct) - abs(cb));
+  g /= length(g) + 1e-4;
+  v += uConf * smoothstep(1.5, 6.0, length(p - uSrc.xy) / uPx) * uDt * c * vec2(g.y, -g.x);   // everywhere but right at the ember, where the thread leaves smooth
+  vec2 d = p - uSrc.xy;
+  float h = exp(-dot(d, d) / (uSrc.z * uSrc.z));
+  T += uSrcT * h * uDt;   // the ember gives off heat at a steady rate
+  v.y += uSrcV * h * uDt;
+  // The pointer is a finger moving through the air: a small solid body, and the air it meets has to
+  // move with it. That is all it does. Everything else is the air's own physics, solved below over
+  // the whole pane: air is pushed aside ahead of the finger and drawn in behind it, whirls roll off
+  // its sides and travel on across the room by themselves. The smoke only ever goes where the air
+  // carries it.
+  vec2 pa = p - uPtr.xy, ba = uPtr.zw - uPtr.xy;
+  vec2 dp = pa - ba * clamp(dot(pa, ba) / max(dot(ba, ba), 1e-4), 0.0, 1.0);
+  v = mix(v, uPtrV.xy, (1.0 - smoothstep(uPtrR * 0.65, uPtrR, length(dp))) * uPtrV.z);
+  T *= exp(-uCool * uDt);
+  if (vUv.y < uTx.y) v.y = max(v.y, 0.0);
+  o = vec4(v, T, 0.0);
+}`;
+const DIV_FS = HEAD + `
+uniform sampler2D uVel;
+uniform vec2 uTx;
+void main() {
+  float l = texture(uVel, vUv - vec2(uTx.x, 0.0)).x, r = texture(uVel, vUv + vec2(uTx.x, 0.0)).x;
+  float b = texture(uVel, vUv - vec2(0.0, uTx.y)).y, t = texture(uVel, vUv + vec2(0.0, uTx.y)).y;
+  if (vUv.y - uTx.y < 0.0) b = -texture(uVel, vUv).y;   // nothing passes through the bottom
+  o = vec4(0.5 * (r - l + t - b));
+}`;
+// The pane is open to the room on its sides and top (pressure 0 beyond them) and closed below.
+const PRESSURE_AROUND = `
+  float l = vUv.x - uTx.x < 0.0 ? 0.0 : texture(uP, vUv - vec2(uTx.x, 0.0)).r;
+  float r = vUv.x + uTx.x > 1.0 ? 0.0 : texture(uP, vUv + vec2(uTx.x, 0.0)).r;
+  float t = vUv.y + uTx.y > 1.0 ? 0.0 : texture(uP, vUv + vec2(0.0, uTx.y)).r;
+  float b = texture(uP, vUv - vec2(0.0, uTx.y)).r;
+`;
+// Two steps of the pressure solve in one pass (each pass costs far more to start than to run): the
+// first step is worked out at the four neighbours, the second here from those.
+const JACOBI_FS = HEAD + `
+uniform sampler2D uP, uDiv;
+uniform vec2 uTx;
+// pressure at a cell: 0 beyond the open sides and top; below, the bottom row (nothing passes the floor)
+float pAt(vec2 q) { return q.x < 0.0 || q.x > 1.0 || q.y > 1.0 ? 0.0 : texture(uP, q).r; }
+float step1(vec2 q) {
+  if (q.x < 0.0 || q.x > 1.0 || q.y > 1.0) return 0.0;
+  q.y = max(q.y, 0.5 * uTx.y);
+  return (pAt(q - vec2(uTx.x, 0.0)) + pAt(q + vec2(uTx.x, 0.0)) + pAt(q - vec2(0.0, uTx.y)) + pAt(q + vec2(0.0, uTx.y)) - texture(uDiv, q).r) * 0.25;
+}
+void main() {
+  o = vec4((step1(vUv - vec2(uTx.x, 0.0)) + step1(vUv + vec2(uTx.x, 0.0)) + step1(vUv - vec2(0.0, uTx.y)) + step1(vUv + vec2(0.0, uTx.y)) - texture(uDiv, vUv).r) * 0.25);
+}`;
+const GRAD_FS = HEAD + `
+uniform sampler2D uP, uVel;
+uniform vec2 uTx;
+void main() {${PRESSURE_AROUND}
+  vec4 s = texture(uVel, vUv);
+  s.xy -= 0.5 * vec2(r - l, t - b);
+  o = s;
+}`;
+
+// ---------- the smoke ----------
+// The smoke is not a dye smeared over the grid: it is threads of tracer points carried by the air,
+// so it stays as fine as real smoke. Each point: x, y, the time it left the ember, its strength.
+// The ribbon of smoke leaving the ember is M threads side by side; the ribbon turns slowly as it
+// leaves, so seen from here it is now edge-on (one bright thread), now face-on (a faint band).
+const POINTS_FS = `#version 300 es
+precision highp float;
+precision highp int;
+out vec4 o;
+uniform sampler2D uPos, uVel;
+uniform vec2 uRes, uSrc;
+uniform float uDt, uTime, uHalfW, uStrength, uSpread, uWander;
+uniform int uHead, uEmit, uM;
+${TWIST}
+${NOISE}
+void main() {
+  ivec2 ij = ivec2(gl_FragCoord.xy);
+  float u = float(ij.y) / float(uM - 1) * 2.0 - 1.0;   // where this thread sits across the ribbon
+  if (uEmit == 1 && ij.x == uHead) {
+    o = vec4(uSrc + vec2(u * uHalfW * cos(twistAt(uTime)), 0.0), uTime, uStrength);
+    return;
+  }
+  vec4 s = texelFetch(uPos, ij, 0);
+  if (s.z <= 0.0) { o = s; return; }
+  vec2 v1 = texture(uVel, s.xy / uRes).xy;
+  vec2 v2 = texture(uVel, (s.xy + 0.5 * uDt * v1) / uRes).xy;
+  vec2 p = s.xy + uDt * v2;
+  // smoke diffuses: the ribbon widens across the flow, fast at first and then ever slower, by as
+  // much as it faced us when it left (edge-on, it stays a thread)
+  p += vec2(v2.y, -v2.x) / max(length(v2), 1.0) * u * cos(twistAt(s.z)) * uSpread * 0.5 / sqrt(uTime - s.z + 0.3) * uDt;
+  // and it diffuses in every direction: once it has left the smooth thread, each part of the ribbon
+  // drifts its own slowly changing way (neighbouring threads much alike, distant ones not), so the
+  // smoke opens out and thins instead of staying a string
+  vec2 at = vec2(s.z * 2.6, float(ij.y) * 0.4 + uTime * 0.3);
+  p += (vec2(noise(at), noise(at + vec2(31.7, 17.3))) - 0.5) * uWander * smoothstep(0.5, 3.5, uTime - s.z) * uDt;
+  if (p.y > uRes.y + 40.0 || p.x < -40.0 || p.x > uRes.x + 40.0) { o = vec4(p, -1.0, 0.0); return; }
+  o = vec4(p, s.zw);
+}`;
+// Mode 0 draws each thread as a soft line. Its brightness is the smoke per length: where the flow
+// stretches a thread it thins and dims, where it gathers the thread brightens; with age it spreads.
+// Mode 1 draws the veil between neighbouring threads, as bright as the smoke is dense there: the
+// same smoke over a larger patch is fainter.
+const RIBBON_VS = `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D uPos;
+uniform int uHead, uN, uM, uSub, uMode;
+uniform vec2 uRes;
+uniform float uTime, uLife, uV0, uW0, uWAge, uSep0, uGain, uWMin;
+out vec3 vProf;   // xy: where across the thread or the puff, in widths; z: 0 for the flat veil
+out float vI;
+vec4 P(int j, int k) { return texelFetch(uPos, ivec2((uHead - k + 4 * uN) % uN, j), 0); }
+bool live(vec4 p) { return p.z > 0.0 && uTime - p.z < uLife; }
+vec2 cr(vec2 a, vec2 b, vec2 c, vec2 d, float t) { return 0.5 * (2.0 * b + (c - a) * t + (2.0 * a - 5.0 * b + 4.0 * c - d) * t * t + (3.0 * b - a - 3.0 * c + d) * t * t * t); }
+vec2 crd(vec2 a, vec2 b, vec2 c, vec2 d, float t) { return 0.5 * ((c - a) + 2.0 * (2.0 * a - 5.0 * b + 4.0 * c - d) * t + 3.0 * (3.0 * b - a - 3.0 * c + d) * t * t); }
+float gLen;   // the length of the piece at() last gave
+// each thread spreads into haze: slowly at first, then steadily
+float wOf(float age) { return uW0 + uWAge * age * age / (age + 1.2); }
+// the point a fraction t of the way from point k to point k + 1 of thread j (k = 0 is the newest)
+bool at(int j, int k, float t, out vec2 pos, out vec2 tn, out float age, out float str, out float stretch) {
+  if (k + 1 >= uN) return false;
+  vec4 a = P(j, k), b = P(j, k + 1);
+  if (!live(a) || !live(b)) return false;
+  float L = length(b.xy - a.xy);
+  if (L > 0.2 * uRes.y) return false;
+  vec2 p0 = 2.0 * a.xy - b.xy, p3 = 2.0 * b.xy - a.xy;
+  if (k > 0) { vec4 z = P(j, k - 1); if (live(z)) p0 = z.xy; }
+  if (k + 2 < uN) { vec4 c = P(j, k + 2); if (live(c)) p3 = c.xy; }
+  pos = cr(p0, a.xy, b.xy, p3, t);
+  tn = crd(p0, a.xy, b.xy, p3, t);
+  gLen = L;
+  if (dot(tn, tn) < 1e-6) tn = b.xy - a.xy;
+  if (dot(tn, tn) < 1e-6) tn = vec2(0.0, 1.0);
+  age = uTime - mix(a.z, b.z, t);
+  str = mix(a.w, b.w, t);
+  stretch = uV0 * max(a.z - b.z, 1e-4) / max(L, 0.05);
+  return true;
+}
+float fade(float age, vec2 p) {
+  // Smoke is not timed out: it stays visible until it has spread too thin to see (its brightness
+  // falls as it widens). The limit on its age only tidies away what is long since invisible.
+  float k = 1.0 - smoothstep(uRes.y * 0.88, uRes.y, p.y);
+  k *= smoothstep(0.0, 30.0, p.x) * smoothstep(0.0, 30.0, uRes.x - p.x);
+  return k * k * (1.0 - smoothstep(uLife * 0.55, uLife * 0.9, age)) * (0.2 + 0.8 * smoothstep(0.02, 0.2, age));   // just leaving the ember, the smoke is too thin to see
+}
+// how much of a thread's smoke is shown as fine line (0) or as soft puffs (1): puffs once it has
+// spread wider than its points are apart
+float puffed(float w, float len) { return smoothstep(0.25, 0.8, w / max(len, 0.01)); }
+// where the ribbon has opened out, its smoke is in the veil between the threads, not in them; once
+// the threads have blurred they overlap into haze, and carry it themselves again
+float share(int j, int k, vec2 p, float age) {
+  bool rim = j == 0 || j == uM - 1;   // the ribbon's edges are its densest part
+  float sep = length(P(rim && j > 0 ? j - 1 : j + 1, k).xy - p);
+  return (rim ? 1.0 : 0.5) * clamp(1.6 * uSep0 / max(sep, 0.01), mix(rim ? 0.4 : 0.1, 0.8, smoothstep(1.0, 4.0, age)), 1.0);
+}
+// How much the flow has stretched the thread at point kk, and how far apart its points are there,
+// from the pieces either side: neighbouring pieces agree where they meet, so the thread has no seams.
+float stretchAt(int j, int kk, out float len) {
+  vec4 p = P(j, kk);
+  float st = 0.0, l = 0.0, n = 0.0;
+  if (kk > 0) { vec4 q = P(j, kk - 1); if (live(q)) { float L = length(q.xy - p.xy); st += uV0 * max(q.z - p.z, 1e-4) / max(L, 0.05); l += L; n += 1.0; } }
+  if (kk + 1 < uN) { vec4 q = P(j, kk + 1); if (live(q)) { float L = length(p.xy - q.xy); st += uV0 * max(p.z - q.z, 1e-4) / max(L, 0.05); l += L; n += 1.0; } }
+  len = l / max(n, 1.0);
+  return st / max(n, 1.0);
+}
+// Mode 2: smoke that has spread is no longer a line. Each of its points is a soft round puff
+// holding the smoke that left the ember with it, so where the smoke gathers the puffs overlap
+// and it is simply denser there.
+void puff() {
+  int c = gl_VertexID % 6, q = gl_VertexID / 6, k = q % uN, j = q / uN;
+  vec4 a = P(j, k);
+  if (!live(a)) return;
+  float age = uTime - a.z, len = 1e3, dtE = 1.0 / 60.0;
+  if (k + 1 < uN) { vec4 b = P(j, k + 1); if (live(b)) { len = length(b.xy - a.xy); dtE = max(a.z - b.z, 1e-4); } }
+  float sw = puffed(wOf(age), len);
+  if (sw <= 0.0) return;
+  float w = max(max(wOf(age), uWMin), 2.2 * len);   // always wide enough to melt into the next puff: a soft band, never a row of beads
+  vec2 cn = vec2((c == 0 || c == 2 || c == 3) ? -1.0 : 1.0, (c == 0 || c == 1 || c == 4) ? -1.0 : 1.0);
+  vI = uGain * a.w * share(j, k, a.xy, age) * sw * 0.48 * uV0 * dtE / (w * w) * fade(age, a.xy);
+  vProf = vec3(cn * 1.6, 1.0);
+  gl_Position = vec4((a.xy + cn * w * 1.6) / uRes * 2.0 - 1.0, 0.0, 1.0);
+}
+void main() {
+  gl_Position = vec4(2.0, 2.0, 0.0, 1.0); vI = 0.0; vProf = vec3(0.0);
+  if (uMode == 2) { puff(); return; }
+  int c = gl_VertexID % 6, q = gl_VertexID / 6;
+  int sub = q % uSub; q /= uSub;
+  int k = q % (uN - 1), j = q / (uN - 1);
+  float e = (c == 0 || c == 1 || c == 4) ? 0.0 : 1.0;    // which end of the piece
+  float s = (c == 0 || c == 2 || c == 3) ? -1.0 : 1.0;   // which side
+  float t = (float(sub) + e) / float(uSub);
+  vec2 pos, tn; float age, str, stretch;
+  if (uMode == 0) {
+    if (!at(j, k, t, pos, tn, age, str, stretch)) return;
+    float w = wOf(age);
+    pos += normalize(vec2(-tn.y, tn.x)) * s * w * 1.6;
+    vProf = vec3(s * 1.6, 0.0, 1.0);
+    float l0, l1, st = mix(stretchAt(j, k, l0), stretchAt(j, k + 1, l1), t);
+    float sh = mix(share(j, k, P(j, k).xy, age), share(j, k + 1, P(j, k + 1).xy, age), t);
+    vI = uGain * str * sh * (1.0 - puffed(w, mix(l0, l1, t))) * clamp(st, 0.08, 1.3) * (0.6 / w) * fade(age, pos);
+  } else {
+    if (j >= uM - 1) return;
+    vec2 pos2, tn2; float age2, str2, stretch2;
+    if (!at(j, k, t, pos, tn, age, str, stretch) || !at(j + 1, k, t, pos2, tn2, age2, str2, stretch2)) return;
+    if (s > 0.0) { pos = pos2; age = age2; str = str2; }
+    vec4 a = P(j, k), b = P(j, k + 1), a2 = P(j + 1, k), b2 = P(j + 1, k + 1);
+    if (!live(a) || !live(b) || !live(a2) || !live(b2)) return;
+    vec2 u1 = b.xy - a.xy, u2 = a2.xy - a.xy, u3 = b2.xy - a2.xy, u4 = b2.xy - b.xy;
+    float area = 0.5 * (abs(u1.x * u2.y - u1.y * u2.x) + abs(u3.x * u4.y - u3.y * u4.x));
+    float area0 = uV0 * max(a.z - b.z, 1e-4) * uSep0;
+    // (where a fold pinches the veil to nothing, the threads alone show it)
+    vI = uGain * str * min(pow(area0 / max(area, 1e-3), 0.65), 1.4) * smoothstep(0.03, 0.35, area / max(area0, 1e-4)) * (1.0 - smoothstep(1.2, 4.0, age)) * fade(age, pos);   // fainter as it thins, though less than in proportion, so a wide veil can still be seen
+  }
+  gl_Position = vec4(pos / uRes * 2.0 - 1.0, 0.0, 1.0);
+}`;
+const RIBBON_FS = `#version 300 es
+precision highp float;
+in vec3 vProf;
+in float vI;
+out vec4 o;
+void main() { o = vec4(vI * (vProf.z < 0.5 ? 1.0 : exp(-2.0 * dot(vProf.xy, vProf.xy)))); }`;
+
+// ---------- the still scene: a stone table, a ceramic dish, a pebble of clay to hold the stick ----------
+// Ray-marched once (and again on resize) through a thin lens: each pass sees the scene from another
+// point on the aperture, all aimed at the plane of the stick, and the passes are summed. What lies in
+// that plane comes out sharp and the table in front and behind falls out of focus, as in a photograph.
+// RGB: light; A: the height of what was hit (for the stick's shadow, cast later).
+const CAMERA = `
+uniform vec3 uCam, uRight, uUp, uFwd;
+uniform float uFocal, uAspect;
+`;
+const BAKE_FS = HEAD + CAMERA + NOISE + LIGHTS + `
+uniform vec2 uRes, uJit, uLens;
+uniform float uFocus, uAperture, uFrame;
+const float RS = ${f(RS)}, R0 = ${f(R0)}, TH = ${f(TH)}, ZBACK = -45.0;   // the wall behind the table
+const vec3 KNOB = ${v3(KNOB)};
+const vec3 SPOT = vec3(0.6, 0.0, -0.5);   // where the lamp is aimed
+const vec3 BG = vec3(0.006, 0.006, 0.007);
+float fbm(vec2 p) { float a = 0.5, s = 0.0; for (int i = 0; i < 5; i++) { s += a * noise(p); p = p * 2.03 + vec2(17.1, 9.2); a *= 0.5; } return s; }
+float smin(float a, float b, float k) { float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0); return mix(b, a, h) - k * h * (1.0 - h); }
+float smax(float a, float b, float k) { return -smin(-a, -b, k); }
+// flecks of mineral: one to a cell, in some cells; x: how much of this point is fleck, y: its tone
+vec2 fleck(vec2 p, float scale, float thresh) {
+  vec2 g = p * scale, id = floor(g), fr = fract(g), best = vec2(0.0);
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec2 of = vec2(float(x), float(y)), cid = id + of;
+    float h = hash(cid);
+    if (h < thresh) continue;
+    vec2 c = of + hash2(cid) * 0.8 + 0.1 - fr;
+    float r = 0.16 + 0.3 * hash(cid + 7.7);
+    float d = length(c * vec2(1.0, 0.7 + 0.6 * hash(cid + 3.1)));
+    float m = smoothstep(r, r * 0.55, d);
+    if (m > best.x) best = vec2(m, hash(cid + 19.3));
+  }
+  return best;
+}
+float dishK(vec2 xz) { float a = atan(xz.y, xz.x); return 1.0 + 0.05 * cos(3.0 * a + 0.7) + 0.028 * cos(2.0 * a - 1.1); }
+float sdDish(vec3 p) {
+  vec2 q = vec2(length(p.xz) / dishK(p.xz), p.y);
+  float shell = abs(length(q - vec2(0.0, RS + TH)) - RS) - TH;
+  return max(smax(shell, q.x - R0, 0.16), p.y - 3.0);
+}
+float sdKnob(vec3 p) { return (length((p - KNOB) / vec3(0.85, 0.6, 0.75)) - 1.0) * 0.6; }
+float map(vec3 p) { return smin(sdDish(p), sdKnob(p), 0.22); }
+vec3 mapNormal(vec3 p) {
+  vec2 e = vec2(0.004, 0.0);
+  return normalize(vec3(map(p + e.xyy) - map(p - e.xyy), map(p + e.yxy) - map(p - e.yxy), map(p + e.yyx) - map(p - e.yyx)));
+}
+// the part of a ray that passes near the dish
+bool nearDish(vec3 ro, vec3 rd, out float t0, out float t1) {
+  vec3 oc = ro - vec3(0.0, 0.7, 0.0);
+  float b = dot(oc, rd), h = b * b - dot(oc, oc) + 6.7 * 6.7;
+  if (h < 0.0) return false;
+  h = sqrt(h); t0 = max(-b - h, 0.0); t1 = -b + h;
+  return t1 > 0.0;
+}
+float march(vec3 ro, vec3 rd) {
+  float t, t1;
+  if (!nearDish(ro, rd, t, t1)) return -1.0;
+  for (int i = 0; i < 96; i++) {
+    float d = map(ro + rd * t) * 0.75;
+    if (d < 0.0015) return t;
+    t += d;
+    if (t > t1) break;
+  }
+  return -1.0;
+}
+// the lamp is broad, so shadows soften with distance from what casts them
+float shadow(vec3 p, vec3 n) {
+  vec3 ro = p + n * 0.02;
+  float t, t1, res = 1.0;
+  if (!nearDish(ro, LDIR, t, t1)) return 1.0;
+  t = max(t, 0.02);
+  for (int i = 0; i < 40; i++) {
+    float d = map(ro + LDIR * t);
+    res = min(res, 7.0 * d / t);
+    t += clamp(d, 0.03, 0.6);
+    if (res < 0.003 || t > t1) break;
+  }
+  res = clamp(res, 0.0, 1.0);
+  return res * res * (3.0 - 2.0 * res);
+}
+float ao(vec3 p, vec3 n) {
+  float occ = 0.0, sca = 1.0;
+  for (int i = 0; i < 5; i++) { float h = 0.03 + 0.28 * float(i); occ += max(h - map(p + n * h), 0.0) * sca; sca *= 0.75; }
+  return clamp(1.0 - 0.9 * occ, 0.0, 1.0);
+}
+vec3 light(vec3 p, vec3 n, vec3 v, vec3 alb, float rough, float f0, float sh, float occ) {
+  vec3 l = normalize(SPOT + LDIR * 70.0 - p);
+  float cone = smoothstep(0.935, 0.992, dot(l, LDIR));   // a pool of light that falls away into the dark
+  cone *= cone;
+  float ndl = max(dot(n, l), 0.0), ndv = max(dot(n, v), 1e-3);
+  vec3 h = normalize(l + v);
+  float ndh = max(dot(n, h), 0.0), a = rough * rough, a2 = a * a, dn = ndh * ndh * (a2 - 1.0) + 1.0;
+  float D = a2 / (3.14159 * dn * dn), F = f0 + (1.0 - f0) * pow(1.0 - max(dot(h, v), 0.0), 5.0);
+  float k = (rough + 1.0) * (rough + 1.0) / 8.0, G = (ndl / (ndl * (1.0 - k) + k)) * (ndv / (ndv * (1.0 - k) + k));
+  float spec = D * F * G / (4.0 * ndl * ndv + 1e-3);
+  vec3 c = KEY * cone * sh * ndl * (alb * 0.36 + spec);
+  c += FILLC * max(dot(n, FILLD), 0.0) * alb * (0.4 + 0.6 * occ) * mix(0.25, 1.0, cone);
+  c += SKY * alb * occ * (0.5 + 0.5 * n.y) * mix(0.15, 1.0, cone);
+  c += alb * vec3(1.0, 0.8, 0.6) * 0.14 * occ;   // the room's own dim warm light, the same that is on the wall: beyond the lamp's pool the table is dark, not black
+  return c;
+}
+// honed dark granite: clouded grey, flecked with pale feldspar and black mica
+vec3 stone(vec2 p, out float rough) {
+  float cloud = fbm(p * 0.22), fine = fbm(p * 2.6);
+  vec3 col = mix(vec3(0.058, 0.057, 0.06), vec3(0.135, 0.13, 0.125), smoothstep(0.25, 0.8, cloud * 0.7 + fine * 0.45));
+  vec2 f1 = fleck(p, 3.2, 0.72);
+  col = mix(col, f1.y > 0.45 ? vec3(0.30, 0.29, 0.275) : vec3(0.022), f1.x * 0.85);
+  vec2 f2 = fleck(p + 31.7, 7.5, 0.6);
+  col = mix(col, f2.y > 0.55 ? vec3(0.24, 0.235, 0.225) : vec3(0.03), f2.x * 0.7);
+  col *= 0.9 + 0.2 * hash(floor(p * 40.0));
+  rough = 0.42 + 0.3 * fine - 0.12 * f1.x;
+  return col;
+}
+// stoneware the colour of sand, speckled with iron; a third of the dish dipped in a blue-grey glaze
+vec3 ceramic(vec3 p, out float rough, out float f0) {
+  vec2 q = p.xz + p.y * 1.7;
+  vec3 clay = mix(vec3(0.50, 0.40, 0.29), vec3(0.60, 0.50, 0.37), fbm(q * 1.3));
+  clay = mix(clay, vec3(0.16, 0.10, 0.06), fleck(q, 5.0, 0.8).x * 0.8);
+  float edge = dot(p.xz, normalize(vec2(0.8, 0.6))) - 1.9 + 0.35 * sin(p.x * 0.9 - p.z * 1.4) + 0.3 * (fbm(p.xz * 0.8) - 0.5);
+  float gl = smoothstep(-0.05, 0.05, edge);
+  vec3 glaze = mix(vec3(0.085, 0.115, 0.14), vec3(0.15, 0.195, 0.225), fbm(p.xz * 2.2));
+  glaze = mix(glaze, vec3(0.34, 0.36, 0.35), smoothstep(0.22, 0.0, edge) * 0.55);   // paler where the glaze runs thin at its edge
+  rough = mix(0.72, 0.2, gl); f0 = mix(0.03, 0.06, gl);
+  return mix(clay, glaze, gl);
+}
+// The wall behind: dark plaster the colour of umber. The lamp is aimed at the table, so the wall
+// has only its warm spill, strongest low and to the left, falling away into shadow.
+vec3 wallAt(vec3 p) {
+  float m = fbm(p.xy * 0.12) * 0.6 + fbm(p.xy * 0.9) * 0.4;   // trowelled, not quite even
+  vec3 alb = mix(vec3(0.20, 0.135, 0.085), vec3(0.27, 0.19, 0.125), m);
+  vec2 d = (p.xy - vec2(-30.0, 14.0)) / vec2(70.0, 45.0);
+  float spill = (0.02 + 0.1 * exp(-dot(d, d))) * (0.8 + 0.2 * smoothstep(-2.0, 12.0, p.y));
+  return alb * vec3(1.0, 0.8, 0.6) * spill;
+}
+void main() {
+  vec2 ndc = (gl_FragCoord.xy + uJit) / uRes * 2.0 - 1.0;
+  vec3 rd0 = normalize(uFwd * uFocal + uRight * ndc.x * uAspect + uUp * ndc.y);
+  float ang = hash(gl_FragCoord.xy + uFrame * 7.31) * 6.2832;
+  vec2 lens = mat2(cos(ang), -sin(ang), sin(ang), cos(ang)) * uLens * uAperture;
+  vec3 ro = uCam + uRight * lens.x + uUp * lens.y;
+  vec3 rd = normalize(uCam + rd0 * (uFocus / dot(rd0, uFwd)) - ro);
+  vec3 col = BG, v = -rd;
+  float hgt = -100.0;
+  float t = march(ro, rd);
+  if (t > 0.0) {
+    vec3 p = ro + rd * t, n = mapNormal(p);
+    n = normalize(n + 0.05 * (vec3(noise(p.xz * 3.0), noise(p.xy * 3.0 + 9.0), noise(p.zx * 3.0 + 5.0)) - 0.5));   // made by hand, not quite even
+    float rough, f0;
+    vec3 alb = ceramic(p, rough, f0);
+    col = light(p, n, v, alb, rough, f0, shadow(p, n), ao(p, n));
+    hgt = p.y;
+  } else if (rd.y < -1e-4) {
+    vec3 p = ro + rd * (-ro.y / rd.y);
+    if (p.z > ZBACK) {
+      float rough;
+      vec3 alb = stone(p.xz, rough);
+      vec3 up = vec3(0.0, 1.0, 0.0);
+      vec3 n = normalize(vec3((noise(p.xz * 9.0 + 3.1) - 0.5) * 0.1, 1.0, (noise(p.xz * 9.0 + 11.7) - 0.5) * 0.1));
+      col = light(p, n, v, alb, rough, 0.04, shadow(p, up), ao(p, up));
+      hgt = 0.0;
+    }
+  }
+  if (hgt < -50.0 && rd.z < -1e-4) {   // past the table: the wall
+    vec3 pw = ro + rd * ((ZBACK - ro.z) / rd.z);
+    if (pw.y > 0.0) col = wallAt(pw);
+  }
+  o = vec4(col, hgt);
+}`;
+
+// ---------- the picture ----------
+// The still scene, then what changes: the stick and its shadow, the ember, the ash on the stick, in
+// the air and in the dish, and the smoke over all of it.
+const FINAL_FS = HEAD + CAMERA + NOISE + LIGHTS + `
+uniform sampler2D uScene, uSmoke, uHaze;
+uniform vec2 uRes;
+uniform float uCount, uTime, uPx;
+uniform vec3 uB3, uE3, uA3;                       // the stick's foot, the ember, the end of the ash (cm)
+uniform vec2 uBase, uEmber, uAshMid, uAshEnd;     // the same in px, y down
+uniform float uRad, uStick, uGlow, uAsh, uAshLen, uAshSeed;
+uniform vec4 uCrumb[28];                          // ash in the dish: x, y, half-length, angle
+uniform int uCrumbN;
+uniform vec4 uCrumbBox;
+uniform vec4 uFall[4];                            // ash in the air
+uniform int uFallN;
+const float R3 = ${f(STICK_R)};
+float seg(vec2 p, vec2 a, vec2 b, out float t) {
+  vec2 pa = p - a, ba = b - a;
+  t = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-5), 0.0, 1.0);
+  return length(pa - ba * t);
+}
+// the smoke, blurred: four taps around the point at a coarse level of its mip chain
+float soft(vec2 uv, float lod) {
+  vec2 tx = exp2(lod) / vec2(textureSize(uSmoke, 0)) * 0.5;
+  return 0.25 * (textureLod(uSmoke, uv + tx * vec2(0.5, 1.0), lod).r + textureLod(uSmoke, uv + tx * vec2(-1.0, 0.5), lod).r
+               + textureLod(uSmoke, uv + tx * vec2(-0.5, -1.0), lod).r + textureLod(uSmoke, uv + tx * vec2(1.0, -0.5), lod).r);
+}
+// the light on a thin rod lying in the plane of the picture; u runs -1..1 across it
+vec3 rodLight(vec2 axis, float u) {
+  vec2 nr = vec2(-axis.y, axis.x);
+  vec3 n = normalize((uRight * nr.x - uUp * nr.y) * u - uFwd * sqrt(max(1.0 - u * u, 0.0)));
+  float wrap = max((dot(n, LDIR) + 0.45) / 1.45, 0.0);   // light wraps a little way round something this thin
+  return KEY * wrap * wrap + FILLC * 2.2 * (0.35 + 0.65 * max(dot(n, FILLD), 0.0)) + SKY * (0.5 + 0.5 * n.y);
+}
+// the ember lights what is right beside it
+vec3 emberLight(float cm) { return EMBER * uGlow * 2.6 / (1.0 + cm * cm * 28.0); }
+// how much of the lamp a thin rod from A to B hides from the point X
+float rodShadow(vec3 X, vec3 A, vec3 B, float r) {
+  vec3 d2 = B - A, rr = X - A;
+  float e = dot(d2, d2), ff = dot(d2, rr), c = dot(LDIR, rr), b = dot(LDIR, d2), den = e - b * b;
+  if (e < 1e-6) return 0.0;
+  float s = den > 1e-5 ? max((b * ff - c * e) / den, 0.0) : 0.0;
+  float t = clamp((b * s + ff) / e, 0.0, 1.0);
+  s = max(b * t - c, 0.0);
+  float dist = length(rr + LDIR * s - d2 * t), pen = 0.045 * s + 0.01;
+  return (r / max(pen, r)) * (1.0 - smoothstep(max(pen - r, 0.0) * 0.4, pen + r, dist)) * step(0.02, s);
+}
+// ash: pale grey, mottled, cracked into rings
+vec3 ashAlb(float along, float u) {
+  float m = noise(vec2(along * 9.0, u * 2.0 + 5.0)), rings = smoothstep(0.72, 0.95, noise(vec2(along * 26.0, 3.0)));
+  return mix(vec3(0.62, 0.60, 0.575), vec3(0.33, 0.32, 0.31), m * 0.7) * (1.0 - 0.45 * rings);
+}
+void main() {
+  vec2 px = vec2(vUv.x, 1.0 - vUv.y) * uRes;
+  vec4 sc = texture(uScene, vUv) / max(uCount, 1.0);
+  vec3 col = sc.rgb;
+  vec2 ndc = vUv * 2.0 - 1.0;
+  vec3 rd = normalize(uFwd * uFocal + uRight * ndc.x * uAspect + uUp * ndc.y);
+  if (sc.a > -0.5 && rd.y < -0.01 && uStick > 0.0) {   // the stick's thin shadow across the dish and the table
+    vec3 X = uCam + rd * ((sc.a - uCam.y) / rd.y);
+    float sh = max(rodShadow(X, uB3, uE3, R3), rodShadow(X, uE3, uA3, R3 * 0.85) * uAsh);
+    col *= 1.0 - 0.8 * sh * uStick;
+  }
+  if (px.x > uCrumbBox.x && px.x < uCrumbBox.z && px.y > uCrumbBox.y && px.y < uCrumbBox.w) {
+    for (int i = 0; i < 28; i++) {
+      if (i >= uCrumbN) break;
+      vec4 c = uCrumb[i];
+      vec2 ax = vec2(cos(c.w), sin(c.w) * 0.45);   // lying flat, seen from low down
+      float t, d = seg(px, c.xy - ax * c.z, c.xy + ax * c.z, t);
+      float r = uRad * (0.5 + 0.3 * hash(c.xy)) * (0.8 + 0.4 * noise(px * 0.9 + c.xy));
+      float sd = seg(px - vec2(uRad * 0.5, uRad * 0.35), c.xy - ax * c.z, c.xy + ax * c.z, t);
+      col *= 1.0 - 0.45 * smoothstep(r + uRad * 0.6, r * 0.3, sd);   // the little shadow it lies in
+      float cov = smoothstep(r + 0.6, r - 0.6, d);
+      if (cov > 0.0) {
+        float tone = 0.78 + 0.22 * hash(c.xy + 3.7) - 0.25 * noise(px * 1.7 + c.xy);
+        float lt = 0.6 + 0.4 * dot(normalize(px - c.xy + 1e-3), vec2(-0.75, -0.66));
+        col = mix(col, vec3(0.62, 0.60, 0.575) * tone * 0.36 * (KEY * 0.62 * lt + FILLC + SKY), cov);
+      }
+    }
+  }
+  // the stick: pressed bark and resin, matte, lit along one edge
+  float lenPx = length(uEmber - uBase);
+  vec2 axis = (uEmber - uBase) / max(lenPx, 1e-3);
+  float t, d = seg(px, uBase, uEmber, t);
+  float cov = smoothstep(uRad + 0.5, uRad - 0.5, d) * uStick;
+  if (cov > 0.0) {
+    float u = clamp(dot(px - uBase, vec2(-axis.y, axis.x)) / uRad, -1.0, 1.0);
+    float along = t * lenPx / uPx, fromE = (1.0 - t) * lenPx / uPx;
+    vec3 alb = mix(vec3(0.21, 0.155, 0.10), vec3(0.28, 0.215, 0.135), noise(vec2(along * 55.0, u * 2.5)));
+    vec3 c = alb * 0.36 * rodLight(axis, u);
+    c = mix(c, c * 0.2 + 0.003, smoothstep(0.5, 0.08, fromE));   // charred just behind the fire
+    c += alb * 0.36 * emberLight(fromE);
+    // The fire is in the stick itself: its last few millimetres glow, deep red where the heat is
+    // only arriving, through orange, to yellow-white at the burning front; a little darker toward
+    // the edges, as a glowing rod is, and mottled like a coal.
+    float em = smoothstep(0.42, 0.0, fromE);
+    float coal = 0.6 + 0.4 * noise(vec2(along * 38.0 + uTime * 0.35, u * 3.0 - uTime * 0.2));
+    vec3 hot = mix(mix(vec3(0.85, 0.10, 0.015), vec3(1.0, 0.40, 0.07), smoothstep(0.15, 0.6, em)), vec3(1.0, 0.80, 0.48), smoothstep(0.7, 1.0, em));
+    c += hot * em * em * coal * (0.7 + 0.3 * sqrt(max(1.0 - u * u, 0.0))) * uGlow * 5.5;
+    col = mix(col, c, cov);
+  }
+  // the ash it leaves, still on the stick
+  if (uAsh > 0.0) {
+    for (int i = 0; i < 2; i++) {
+      vec2 a = i == 0 ? uEmber : uAshMid, b = i == 0 ? uAshMid : uAshEnd;
+      vec2 ax = normalize(b - a + 1e-4);
+      float ta, da = seg(px, a, b, ta);
+      float along = (float(i) + ta) * 0.5 * uAshLen;
+      float ra = uRad * (0.9 - 0.1 * along / max(uAshLen, 0.01)) * (0.86 + 0.26 * noise(vec2(along * 14.0 + uAshSeed, 1.0)));
+      float ca = smoothstep(ra + 0.5, ra - 0.5, da) * uAsh;
+      if (ca > 0.0) {
+        float u = clamp(dot(px - a, vec2(-ax.y, ax.x)) / ra, -1.0, 1.0);
+        vec3 c = ashAlb(along + uAshSeed, u) * 0.36 * (rodLight(ax, u) + emberLight(along + 0.08));
+        c += EMBER * smoothstep(0.16, 0.0, along) * uGlow * (0.6 + 0.8 * noise(vec2(along * 40.0 - uTime * 0.3, u * 3.0))) * 2.2;   // still glowing where it has only just burnt
+        col = mix(col, c, ca);
+      }
+    }
+  }
+  for (int i = 0; i < 4; i++) {
+    if (i >= uFallN) break;
+    vec4 fl = uFall[i];
+    vec2 ax = vec2(cos(fl.z), sin(fl.z));
+    float tf, df = seg(px, fl.xy - ax * fl.w, fl.xy + ax * fl.w, tf);
+    float rf = uRad * 0.82 * (0.85 + 0.3 * noise(vec2(tf * 9.0, fl.w)));
+    float cf = smoothstep(rf + 0.5, rf - 0.5, df);
+    if (cf > 0.0) col = mix(col, ashAlb(tf * 2.0 + fl.w, 0.0) * 0.36 * rodLight(ax, clamp(dot(px - fl.xy, vec2(-ax.y, ax.x)) / rf, -1.0, 1.0)), cf);
+  }
+  // the smoke: fine threads, and the same smoke blurred, for the haze it spreads into
+  float dens = texture(uSmoke, vUv).r + soft(vUv, 1.6) * 0.4 + soft(vUv, 3.2) * 0.3 + texture(uHaze, vUv).r;
+  float re = length(px - uEmber);
+  float hy = (uEmber.y - px.y) / uRes.y;   // height above the ember, in pane heights
+  vec3 sm = vec3(0.74, 0.81, 0.93) * 1.4 * mix(1.0, 0.5, smoothstep(0.05, 0.5, hy));   // it rises out of the lamp's light
+  sm = mix(sm, vec3(1.0, 0.55, 0.28) * 1.4, exp(-re / (uRad * 6.0)) * 0.7 * uGlow);       // and is lit warm by the ember
+  dens /= 1.0 + 0.4 * dens;   // dense folds are brighter, but never glaring knots
+  float a = 1.0 - exp(-dens);
+  col = col * (1.0 - 0.3 * a) + sm * a;
+  // only a faint warmth in the air around the fire, following the shape of the glowing tip, so the
+  // stick itself stays clear to see
+  float tg, dg = seg(px, uEmber - axis * 0.3 * uPx, uEmber, tg);
+  col += EMBER * uGlow * (exp(-dg * dg / (uRad * uRad * 5.0)) * 0.1 + exp(-dg / (uRad * 9.0)) * 0.022);
+  col *= 1.25;
+  col = (col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14);
+  col *= mix(1.0, 0.55, smoothstep(0.35, 0.95, length((vUv - 0.5) * vec2(min(uAspect, 1.25), 1.0))));
+  col = pow(max(col, 0.0), vec3(1.0 / 2.2));
+  col += (hash(px + fract(uTime) * 61.0) - 0.5) * 0.022;
+  o = vec4(col, 1.0);
+}`;
+
+const curlP = program(QUAD_VS, CURL_FS), forceP = program(QUAD_VS, FORCE_FS);
+const divP = program(QUAD_VS, DIV_FS), jacobiP = program(QUAD_VS, JACOBI_FS), gradP = program(QUAD_VS, GRAD_FS);
+const pointsP = program(QUAD_VS, POINTS_FS), ribbonP = program(RIBBON_VS, RIBBON_FS);
+const bakeP = program(QUAD_VS, BAKE_FS), finalP = program(QUAD_VS, FINAL_FS);
+
+// ---------- sizing, and the camera ----------
+let W = 0, H = 0, gw = 0, gh = 0, cell = 1, pxPerCm = 1;
+let vel = null, prs = null, dvg = null, crl = null, pts = null, smoke = null, haze = null;
+const cam = { pos: [0, 0, 0], right: [1, 0, 0], up: [0, 1, 0], fwd: [0, 0, -1], focal: 1, aspect: 1, focus: 1 };
+const bake = { t: null, n: 0 };
+// The picture is drawn at the screen's pixel density up to a budget of pixels, and the budget comes
+// down if frames run slow (see frame).
+let canvasPx = 3.4e6;
+function sizeCanvas() {
+  const k = Math.min(Math.min(devicePixelRatio || 1, 2), Math.sqrt(canvasPx / (W * H)));
+  canvas.width = Math.round(W * k); canvas.height = Math.round(H * k);
+  freeTarget(smoke);
+  smoke = makeTarget(canvas.width, canvas.height, F_R16, gl.LINEAR, true);
+  freeTarget(haze);
+  haze = makeTarget(Math.max(1, Math.round(W / 2)), Math.max(1, Math.round(H / 2)), F_R16, gl.LINEAR);   // soft puffs need few pixels
+}
+function project(P) {
+  const v = [P[0] - cam.pos[0], P[1] - cam.pos[1], P[2] - cam.pos[2]], z = dot(v, cam.fwd);
+  return [(dot(v, cam.right) / z * cam.focal / cam.aspect * 0.5 + 0.5) * W, (0.5 - dot(v, cam.up) / z * cam.focal * 0.5) * H];
+}
+function resize() {
+  W = Math.max(1, Math.round(viewW())); H = Math.max(1, Math.round(viewH()));
+  sizeCanvas();
+  // A long lens, a little above the table, looking slightly down. The pane shows 34 cm of the scene
+  // from top to bottom (more on a narrow screen, so the dish always fits), half of it air for the smoke.
+  const fov = 26 * Math.PI / 180, pitch = 9.5 * Math.PI / 180, span = Math.max(34, 15.5 * H / W);
+  cam.focal = 1 / Math.tan(fov / 2); cam.aspect = W / H;
+  cam.focus = span / 2 * cam.focal;
+  cam.fwd = [0, -Math.sin(pitch), -Math.cos(pitch)]; cam.up = [0, Math.cos(pitch), -Math.sin(pitch)];
+  cam.pos = [1.0, 12 + cam.focus * Math.sin(pitch), cam.focus * Math.cos(pitch)];
+  pxPerCm = H / span;
+  cell = Math.max(W, H) / GRID; gw = Math.max(8, Math.round(W / cell)); gh = Math.max(8, Math.round(H / cell));
+  freePair(vel); freePair(prs); freeTarget(dvg); freeTarget(crl); freePair(pts); freeTarget(bake.t);
+  vel = pair(gw, gh, F_RGBA16, gl.LINEAR); prs = pair(gw, gh, F_R16, gl.NEAREST);
+  dvg = makeTarget(gw, gh, F_R16, gl.NEAREST); crl = makeTarget(gw, gh, F_R16, gl.NEAREST);
+  pts = pair(N, M, F_RGBA32, gl.NEAREST);
+  const dpr = Math.min(devicePixelRatio || 1, 2), kb = Math.min(dpr, Math.sqrt(2.2e6 / (W * H)));
+  bake.t = makeTarget(Math.round(W * kb), Math.round(H * kb), F_RGBA16, gl.LINEAR);
+  bake.n = 0;
+  head = 0; emitAcc = 0;
+  for (let i = 0; i < 6; i++) bakeStep();
+  place();
+  // start with the smoke already risen: first let the air settle into a steady rise, then lay the smoke into it
+  for (let i = 0; i < 260; i++) simulate(1 / 40, false);
+  for (let i = 0; i < 330; i++) simulate(1 / 60);
+}
+
+// ---------- the stick: burning down, turning to ash, the ash falling ----------
+const rand = Math.random;
+const stick = { len: STICK_LEN * (0.82 + 0.16 * rand()), alpha: 1, glow: 1, phase: 'burn', t: 0 };
+const ash = { len: 0.35 + rand() * 0.3, curl: 0, breakAt: 0, seed: 0 };
+function newAsh(len) { ash.len = len; ash.curl = (rand() * 2 - 1) * 0.42; ash.breakAt = 0.75 + rand() * 0.75; ash.seed = rand() * 50; }
+newAsh(ash.len);
+const falling = [], crumbs = [];
+const geo = { E: BASE, mid: BASE, end: BASE, pB: [0, 0], pE: [0, 0], pMid: [0, 0], pEnd: [0, 0] };
+const crumbPx = new Float32Array(28 * 4), fallPx = new Float32Array(4 * 4), crumbBox = [0, 0, 0, 0];
+// where everything is, in the picture
+function place() {
+  const E = add(BASE, mul(DIR, stick.len));
+  const mid = add(E, mul(turn(DIR, ash.curl * ash.len * 0.25), ash.len * 0.5)), end = add(mid, mul(turn(DIR, ash.curl * ash.len * 0.75), ash.len * 0.5));
+  geo.E = E; geo.mid = mid; geo.end = end;
+  geo.pB = project(BASE); geo.pE = project(E); geo.pMid = project(mid); geo.pEnd = project(end);
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  crumbs.forEach((c, i) => {
+    const p = project([c.x, c.y, c.z]), hl = c.len * 0.5 * pxPerCm;
+    crumbPx.set([p[0], p[1], hl, c.a], i * 4);
+    x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]);
+  });
+  const m = 0.6 * pxPerCm;
+  crumbBox[0] = x0 - m; crumbBox[1] = y0 - m; crumbBox[2] = x1 + m; crumbBox[3] = y1 + m;
+  falling.forEach((p, i) => { if (i < 4) { const q = project([p.x, p.y, 0]); fallPx.set([q[0], q[1], p.a, p.len * 0.5 * pxPerCm], i * 4); } });
+}
+// the ash lets go just above the ember and falls
+function dropAsh(push = 0) {
+  const stub = 0.05, len = ash.len - stub;
+  if (len < 0.12) return;
+  const a = geo.pE, b = geo.pEnd, c = mul(add(geo.E, geo.end), 0.5);
+  falling.push({ x: c[0], y: c[1], vx: (rand() - 0.5) * 1.2 + push, vy: 0, a: Math.atan2(b[1] - a[1], b[0] - a[0]), w: (rand() - 0.5) * 9, len });
+  newAsh(stub);
+}
+function land(p) {
+  // it breaks where it lands: a few crumbs, scattered a little
+  const n = 2 + (rand() * 3 | 0);
+  for (let i = 0; i < n; i++) {
+    const x = p.x + (rand() - 0.5) * 0.8, z = (rand() - 0.5) * 0.9;
+    crumbs.push({ x, y: restY(x, z) + 0.03, z, len: p.len / n * (0.6 + rand() * 0.7), a: rand() * Math.PI });
+  }
+  while (crumbs.length > 28) crumbs.shift();
+}
+let stir = 0;   // how much the air around the ember has just been disturbed
+function burn(dt) {
+  stick.t += dt;
+  if (stick.phase === 'burn') {
+    const burnt = STICK_LEN / (K.minutes * 60) * dt;
+    stick.len -= burnt; ash.len += burnt * 0.92;
+    if (ash.len > ash.breakAt) dropAsh();
+    else if (stir > 0.55 && ash.len > 0.3) dropAsh(Math.sign(ptr.vx) * 2.5);   // a draught knocks it off early
+    if (stick.len < 1.1) { stick.phase = 'dying'; stick.t = 0; }
+  } else if (stick.phase === 'dying') {          // burnt down to the holder: the ember fades
+    stick.glow = Math.max(0, 1 - stick.t / 6);
+    if (stick.glow === 0) { dropAsh(); stick.phase = 'gone'; stick.t = 0; }
+  } else if (stick.phase === 'gone') {           // the stub is taken away
+    stick.alpha = Math.max(0, 1 - Math.max(0, stick.t - 2.5) / 2.5);
+    if (stick.t > 6) { stick.phase = 'fresh'; stick.t = 0; stick.len = STICK_LEN; newAsh(0); }
+  } else if (stick.phase === 'fresh') {          // a new stick is set in the holder, and lit
+    stick.alpha = Math.min(1, stick.t / 2.5);
+    stick.glow = Math.min(1, Math.max(0, stick.t - 2.5) / 3);
+    if (stick.t > 5.5) stick.phase = 'burn';
+  }
+  for (let i = falling.length - 1; i >= 0; i--) {
+    const p = falling[i];
+    p.vy -= 150 * dt; p.vx *= Math.exp(-1.2 * dt); p.vy *= Math.exp(-1.2 * dt);
+    p.x += p.vx * dt; p.y += p.vy * dt; p.a += p.w * dt;
+    if (p.y <= restY(p.x, 0) + 0.05) { land(p); falling.splice(i, 1); }
+  }
+  stir *= Math.exp(-dt / 1.2);
+  place();
+}
+
+// ---------- the pointer: a finger moving through the air ----------
+const ptr = { x: -1e4, y: -1e4, lx: -1e4, ly: -1e4, vx: 0, vy: 0, t: 0, moved: false };
+onPage('pointermove', (e) => {
+  const x = localX(e), y = localY(e), now = performance.now(), dtp = (now - ptr.t) / 1000;
+  if (dtp > 0 && dtp < 0.12) { ptr.vx += ((x - ptr.x) / dtp - ptr.vx) * 0.25; ptr.vy += ((y - ptr.y) / dtp - ptr.vy) * 0.25; }
+  else { ptr.vx = ptr.vy = 0; ptr.lx = x; ptr.ly = y; }
+  ptr.x = x; ptr.y = y; ptr.t = now; ptr.moved = true;
+});
+onPage('pointerdown', (e) => {
+  ptr.x = ptr.lx = localX(e); ptr.y = ptr.ly = localY(e); ptr.vx = ptr.vy = 0; ptr.t = performance.now();   // a finger set down: still, until it moves
+});
+
+// ---------- one step of the air and the smoke ----------
+let time = 10 + rand() * 500, head = 0, emitAcc = 0, airAcc = 0;
+// one step of the air: carried along, pushed by warmth, the room, the pointer and the ember, made incompressible
+function airStep(dt, src, calm) {
+  let u = curlP.u;
+  gl.useProgram(curlP.p); bind(0, vel.read.tex);
+  gl.uniform1i(u.uVel, 0); gl.uniform2f(u.uTx, 1 / gw, 1 / gh);
+  quadTo(crl);
+
+  u = forceP.u;
+  gl.useProgram(forceP.p); bind(0, vel.read.tex); bind(1, crl.tex);
+  gl.uniform1i(u.uVel, 0); gl.uniform1i(u.uCurl, 1);
+  gl.uniform2f(u.uTx, 1 / gw, 1 / gh); gl.uniform2f(u.uRes, W, H); gl.uniform2f(u.uInv, 1 / W, 1 / H);
+  gl.uniform1f(u.uDt, dt); gl.uniform1f(u.uTime, time);
+  gl.uniform1f(u.uBuoy, K.buoy * pxPerCm); gl.uniform1f(u.uCool, K.cool); gl.uniform1f(u.uDrag, K.drag); gl.uniform1f(u.uConf, K.conf);
+  const spread = 4 * dt * pxPerCm * pxPerCm / (cell * cell);
+  gl.uniform1f(u.uVisc, Math.min(0.8, K.visc * spread)); gl.uniform1f(u.uHeat, Math.min(0.8, K.heat * spread)); gl.uniform1f(u.uPx, pxPerCm);
+  gl.uniform1f(u.uSway, K.sway * pxPerCm * calm); gl.uniform1f(u.uEddy, K.eddy * pxPerCm * calm);
+  gl.uniform3f(u.uSrc, src[0], src[1], Math.max(1.4 * cell, 0.3 * pxPerCm));   // the same size of fire on every screen
+  gl.uniform1f(u.uSrcT, K.fire * stick.glow); gl.uniform1f(u.uSrcV, K.srcV * pxPerCm * stick.glow);
+  // The finger moves at the pointer's speed (no faster than a quick flick), and the air it meets is
+  // brought to that speed almost at once, the same whichever way it goes.
+  const speed = Math.hypot(ptr.vx, ptr.vy), cap = 60 * pxPerCm, sc = speed > cap ? cap / speed : 1;
+  gl.uniform4f(u.uPtr, ptr.lx, H - ptr.ly, ptr.x, H - ptr.y);
+  gl.uniform3f(u.uPtrV, ptr.vx * sc, -ptr.vy * sc, ptr.moved ? 1 - Math.exp(-30 * dt) : 0);
+  gl.uniform1f(u.uPtrR, 1.8 * pxPerCm);   // a fingertip-sized body, with the air that clings to it
+  quadTo(vel.write); vel.swap();
+  if (ptr.moved) {
+    const near = Math.exp(-((ptr.x - geo.pE[0]) ** 2 + (ptr.y - geo.pE[1]) ** 2) / (7 * pxPerCm) ** 2);
+    stir = Math.min(1.5, stir + near * Math.min(1, speed / (40 * pxPerCm)) * dt * 7);
+  }
+  ptr.lx = ptr.x; ptr.ly = ptr.y; ptr.moved = false;
+  if (performance.now() - ptr.t > 60) { ptr.vx *= Math.exp(-20 * dt); ptr.vy *= Math.exp(-20 * dt); }
+
+  u = divP.u;
+  gl.useProgram(divP.p); bind(0, vel.read.tex);
+  gl.uniform1i(u.uVel, 0); gl.uniform2f(u.uTx, 1 / gw, 1 / gh);
+  quadTo(dvg);
+  u = jacobiP.u;
+  gl.useProgram(jacobiP.p); bind(1, dvg.tex);
+  gl.uniform1i(u.uP, 0); gl.uniform1i(u.uDiv, 1); gl.uniform2f(u.uTx, 1 / gw, 1 / gh);
+  for (let i = 0; i < ITER; i++) { bind(0, prs.read.tex); quadTo(prs.write); prs.swap(); }
+  u = gradP.u;
+  gl.useProgram(gradP.p); bind(0, prs.read.tex); bind(1, vel.read.tex);
+  gl.uniform1i(u.uP, 0); gl.uniform1i(u.uVel, 1); gl.uniform2f(u.uTx, 1 / gw, 1 / gh);
+  quadTo(vel.write); vel.swap();
+}
+function simulate(dt, smoking = true) {
+  time += dt;
+  const calm = reduced ? 0.5 : 1;
+  const src = [geo.pE[0], H - geo.pE[1] + STICK_R * 0.4 * pxPerCm];
+  gl.disable(gl.BLEND);
+  // The air changes slowly: it is worked out about thirty times a second, a step of the time since,
+  // and the smoke rides it every frame.
+  airAcc += dt;
+  if (airAcc >= 1 / 40 || !smoking) { airStep(airAcc, src, calm); airAcc = 0; }
+
+  // the smoke: a new point on every thread about sixty times a second; the rest ride the air
+  if (!smoking) return;
+  emitAcc += dt;
+  const emit = emitAcc >= 0.0155;
+  if (emit) { emitAcc = 0; head = (head + 1) % N; }
+  const u = pointsP.u;
+  gl.useProgram(pointsP.p); bind(0, pts.read.tex); bind(1, vel.read.tex);
+  gl.uniform1i(u.uPos, 0); gl.uniform1i(u.uVel, 1);
+  gl.uniform2f(u.uRes, W, H); gl.uniform2f(u.uSrc, src[0], src[1]);
+  gl.uniform1f(u.uDt, dt); gl.uniform1f(u.uTime, time);
+  gl.uniform1f(u.uHalfW, K.ribbon * pxPerCm); gl.uniform1f(u.uSpread, K.spread * pxPerCm); gl.uniform1f(u.uWander, K.wander * pxPerCm);
+  gl.uniform1f(u.uStrength, stick.glow * (0.85 + 0.15 * Math.sin(time * 1.7) * Math.sin(time * 0.61)));
+  gl.uniform1i(u.uHead, head); gl.uniform1i(u.uEmit, emit ? 1 : 0); gl.uniform1i(u.uM, M);
+  quadTo(pts.write); pts.swap();
+}
+function drawSmoke() {
+  const u = ribbonP.u;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, smoke.fb); gl.viewport(0, 0, smoke.w, smoke.h);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(ribbonP.p); bind(0, pts.read.tex);
+  gl.uniform1i(u.uPos, 0); gl.uniform1i(u.uHead, head); gl.uniform1i(u.uN, N); gl.uniform1i(u.uM, M); gl.uniform1i(u.uSub, SUB);
+  gl.uniform2f(u.uRes, W, H);
+  gl.uniform1f(u.uTime, time); gl.uniform1f(u.uLife, K.life); gl.uniform1f(u.uV0, K.rise * pxPerCm);
+  gl.uniform1f(u.uW0, Math.max(0.6, 1.1 * W / canvas.width));   // never thinner than a pixel of the screen
+  gl.uniform1f(u.uWAge, K.blur * pxPerCm); gl.uniform1f(u.uSep0, 2 * K.ribbon * pxPerCm / (M - 1));
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+  gl.bindVertexArray(vaoNone);
+  gl.uniform1i(u.uMode, 1); gl.uniform1f(u.uGain, K.veil); gl.drawArrays(gl.TRIANGLES, 0, (M - 1) * (N - 1) * SUB * 6);
+  gl.uniform1i(u.uMode, 0); gl.uniform1f(u.uGain, K.thread); gl.drawArrays(gl.TRIANGLES, 0, M * (N - 1) * SUB * 6);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, haze.fb); gl.viewport(0, 0, haze.w, haze.h);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.uniform1i(u.uMode, 2); gl.uniform1f(u.uWMin, 3); gl.drawArrays(gl.TRIANGLES, 0, M * N * 6);
+  gl.disable(gl.BLEND);
+  bind(0, smoke.tex); gl.generateMipmap(gl.TEXTURE_2D);
+}
+function camera(u) {
+  gl.uniform3fv(u.uCam, cam.pos); gl.uniform3fv(u.uRight, cam.right); gl.uniform3fv(u.uUp, cam.up); gl.uniform3fv(u.uFwd, cam.fwd);
+  gl.uniform1f(u.uFocal, cam.focal); gl.uniform1f(u.uAspect, cam.aspect);
+}
+const halton = (i, b) => { let fr = 1, r = 0; while (i > 0) { fr /= b; r += fr * (i % b); i = Math.floor(i / b); } return r; };
+// one more view of the still scene, from another point on the lens
+function bakeStep() {
+  if (bake.n >= BAKE_N) return;
+  const u = bakeP.u, t = bake.t, i = (bake.n * 37) % BAKE_N, r = Math.sqrt((i + 0.5) / BAKE_N), a = i * 2.39996323;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, t.fb); gl.viewport(0, 0, t.w, t.h);
+  if (bake.n === 0) { gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); }
+  gl.useProgram(bakeP.p); camera(u);
+  gl.uniform2f(u.uRes, t.w, t.h);
+  gl.uniform2f(u.uJit, halton(bake.n + 1, 2) - 0.5, halton(bake.n + 1, 3) - 0.5);
+  gl.uniform2f(u.uLens, r * Math.cos(a), r * Math.sin(a));
+  gl.uniform1f(u.uFocus, cam.focus); gl.uniform1f(u.uAperture, 0.9); gl.uniform1f(u.uFrame, bake.n);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+  gl.bindVertexArray(vaoQuad); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.disable(gl.BLEND);
+  bake.n++;
+}
+function composite() {
+  const u = finalP.u;
+  gl.useProgram(finalP.p); camera(u);
+  bind(0, bake.t.tex); bind(1, smoke.tex); bind(2, haze.tex);
+  gl.uniform1i(u.uScene, 0); gl.uniform1i(u.uSmoke, 1); gl.uniform1i(u.uHaze, 2);
+  gl.uniform2f(u.uRes, W, H);
+  gl.uniform1f(u.uCount, bake.n); gl.uniform1f(u.uTime, time); gl.uniform1f(u.uPx, pxPerCm);
+  gl.uniform3fv(u.uB3, BASE); gl.uniform3fv(u.uE3, geo.E); gl.uniform3fv(u.uA3, geo.end);
+  gl.uniform2fv(u.uBase, geo.pB); gl.uniform2fv(u.uEmber, geo.pE); gl.uniform2fv(u.uAshMid, geo.pMid); gl.uniform2fv(u.uAshEnd, geo.pEnd);
+  gl.uniform1f(u.uRad, STICK_R * pxPerCm); gl.uniform1f(u.uStick, stick.alpha);
+  // the ember breathes: steady, a little brighter whenever air moves across it
+  const breath = 0.84 + 0.08 * Math.sin(time * 0.9) * Math.sin(time * 0.37) + 0.05 * Math.sin(time * 2.3);
+  gl.uniform1f(u.uGlow, stick.glow * (breath + 0.7 * Math.min(1, stir)));
+  gl.uniform1f(u.uAsh, ash.len > 0.02 ? stick.alpha : 0); gl.uniform1f(u.uAshLen, ash.len); gl.uniform1f(u.uAshSeed, ash.seed);
+  gl.uniform4fv(u.uCrumb, crumbPx); gl.uniform1i(u.uCrumbN, crumbs.length); gl.uniform4fv(u.uCrumbBox, crumbBox);
+  gl.uniform4fv(u.uFall, fallPx); gl.uniform1i(u.uFallN, Math.min(4, falling.length));
+  quadTo(null);
+}
+
+resize();
+
+let last = performance.now(), prevT = last, owe = 0, slowT = 0, slowN = 0, sizeSeen = [0, 0, 0];
+function frame(now) {
+  // At most 60 frames a second: on a faster screen (90 or 120 Hz) more would only multiply the work
+  // for nothing anyone sees in slow smoke, so the frames between are skipped, keeping an even 60.
+  owe += now - prevT; prevT = now;
+  if (owe < 12) { nextFrame(frame); return; }
+  owe = Math.max(0, Math.min(owe - 16.667, 16.667));
+  const dt = Math.min(Math.max((now - last) / 1000, 1 / 240), 1 / 30);
+  // if frames keep running slower than ~45 a second, draw the picture with fewer pixels
+  if (bake.n >= BAKE_N && now - last < 250) {
+    slowT += now - last;
+    if (++slowN === 90) { if (slowT / slowN > 22 && canvasPx > 1.2e6) { canvasPx *= 0.7; sizeCanvas(); } slowT = slowN = 0; }
+  }
+  last = now;
+  // the pane changed size: wait until it has held still for a moment, then set everything up again
+  if (Math.round(viewW()) !== W || Math.round(viewH()) !== H) {
+    if (viewW() !== sizeSeen[0] || viewH() !== sizeSeen[1]) sizeSeen = [viewW(), viewH(), now];
+    else if (now - sizeSeen[2] > 150 && viewW() > 1 && viewH() > 1) resize();
+  }
+  burn(dt);
+  simulate(dt);
+  drawSmoke();
+  bakeStep();
+  composite();
+  if (bake.n > 20) canvas.classList.add('is-lit');
+  nextFrame(frame);
+}
+nextFrame(frame);
+})();
+</script>
+<script src="../../assets/side.js?v=5" data-current="senko" data-theme="dark"></script>
+</body>
+</html>
