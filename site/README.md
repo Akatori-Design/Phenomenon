@@ -3,7 +3,6 @@
 The site for Phenomenon by Hiro · Akatori Design, published at
 https://akatori-design.github.io/Phenomenon/. Every page is just a piece, full screen, with its
 name lettered vertically on the right. Tap the name and the other pages slide out beside it.
-Rain on Glass is the exception: it shows the piece alone, with no name or menu.
 
 | Page | Name | What it is |
 | --- | --- | --- |
@@ -11,6 +10,7 @@ Rain on Glass is the exception: it shows the piece alone, with no name or menu.
 | `/works/komorebi-wall/` | 木漏れ日 komorebi | Komorebi Wall, with its rustling sound |
 | `/works/rain-on-glass/` | 雨の日 rainy day | Rain on Glass |
 | `/works/attic-light/` | 屋根裏 attic | Attic Light |
+| `/works/senko/` | 線香 incense | Senko: a stick of incense burning, and its smoke |
 | imhiro.xyz | ひろの部屋 hiro's room | link out |
 
 ```
@@ -19,6 +19,7 @@ assets/komorebi.js         the Komorebi Wall effect, scoped to the landing page
 assets/side.js             the vertical name and its menu, shared by every page
 assets/img/komorebi-wall.jpg   still shown if the browser has no WebGL 2
 works/<piece>/index.html   the pieces, copied from the folders at the root of this repo
+works/senko/index.html     Senko, which so far lives only here
 ```
 
 ## The side menu
@@ -26,7 +27,7 @@ works/<piece>/index.html   the pieces, copied from the folders at the root of th
 Each page adds it with one line at the end of `<body>`:
 
 ```html
-<script src="../../assets/side.js?v=4" data-current="rain-on-glass" data-theme="dark"></script>
+<script src="../../assets/side.js?v=5" data-current="rain-on-glass" data-theme="dark"></script>
 ```
 
 `data-current` picks the page's own name; the menu lists the others. `data-theme="dark"` draws the
@@ -93,6 +94,42 @@ None of the pages show a control tray; each runs at fixed settings.
     phone, stepping down if frames run slow. It draws at most 60 frames a second, skipping the
     frames between on a 90 or 120 Hz screen.
 - **Attic Light**: unchanged apart from the menu.
+- **Senko** (線香): new, and only on the site. A stick of Japanese incense stands tilted in a clay
+  pebble on a ceramic dish, on a stone table, in a pool of lamplight. Behind it is a dark wall of
+  warm umber plaster, lit only by the lamp's spill.
+  - The scene is drawn in code. The table, dish and pebble are ray-marched once through a thin
+    lens (96 passes summed over the first second and a half), so the plane of the stick is sharp
+    and the table falls out of focus. The stick, its shadow, the ember and the ash are drawn over
+    that every frame.
+  - The smoke is a fluid simulation of the air in the plane of the stick: warm air rises, the flow
+    is kept incompressible by a pressure solve, and air has its real viscosity (0.15 cm²/s), which
+    is what keeps the thread smooth as it leaves the ember. The room drifts faintly and has small
+    slow eddies, stillest near the table, so the thread sways and folds over higher up.
+  - The smoke itself is 24 threads of tracer points carried by that air, with a veil between
+    neighbours, as bright as the smoke is dense there. The ribbon turns as it leaves the ember, so
+    it shows now edge-on as one bright thread, now face-on as a faint band.
+  - It diffuses. Each thread widens with age and its parts drift their own ways, so the ribbon
+    opens out and thins. Once a thread has spread wider than its points are apart it is drawn as
+    soft round puffs, each holding the smoke that left the ember with it, so smoke that gathers is
+    only denser, never a bright speck. Smoke is not timed out: it stays visible until it has spread
+    too thin to see.
+  - The pointer is a finger moving through the air: a small solid body about 3.5 cm across, and the
+    air it meets has to move with it. That is all it does. The rest is the simulation: air is
+    pushed aside and drawn in behind, and whirls roll off the sides and travel on across the pane
+    by themselves. The smoke only goes where the air carries it. The air keeps its motion and
+    settles over several seconds.
+    Air moving across the ember makes it glow brighter and can knock the ash off early.
+  - The fire is drawn inside the stick: its last few millimetres glow from deep red to
+    yellow-white, with only a faint warmth in the air around them.
+  - The stick burns down in about twelve minutes. The ash grows on the tip, breaks off every
+    minute or so, falls, and gathers as crumbs in the dish. At the end the ember fades with a last
+    wisp, and a fresh stick is set in the holder and lit.
+  - It is silent. With reduced motion the room's drift is halved.
+  - Kept light: the air is worked out about thirty times a second (the smoke rides it every frame)
+    in 13 passes, with advection folded into the forces and two pressure steps to a pass; the smoke
+    is drawn as one smooth curve per piece; and the picture is drawn at most about sixty times a
+    second, so a 120 Hz screen does half the work. Uncapped, it draws about 200 frames a second at
+    1440×900 on a Retina Mac. It needs WebGL 2 with float render targets.
 
 ## Running locally
 
